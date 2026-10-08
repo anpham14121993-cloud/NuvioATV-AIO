@@ -72,6 +72,9 @@ android {
         versionCode = releaseAppVersionCode
         versionName = releaseAppVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     flavorDimensions += "distribution"
@@ -111,7 +114,7 @@ android {
 
     splits {
         abi {
-            isEnable = buildsReleaseApks
+            isEnable = false
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = false
@@ -144,7 +147,7 @@ android {
 }
 
 androidComponents {
-    onVariants(selector().withBuildType("debug")) { variant ->
+    onVariants { variant ->
         variant.applicationId.set("com.nuviodebug.com")
     }
 }

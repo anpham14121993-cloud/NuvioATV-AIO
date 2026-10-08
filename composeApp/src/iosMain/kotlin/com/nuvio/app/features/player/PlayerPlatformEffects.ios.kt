@@ -16,6 +16,7 @@ import platform.UIKit.UISlider
 
 private const val lockPlayerToLandscapeNotification = "NuvioPlayerLockLandscape"
 private const val unlockPlayerOrientationNotification = "NuvioPlayerUnlockOrientation"
+private const val lockPlayerPortraitNotification = "NuvioPlayerLockPortrait"
 private var playerLandscapeLockCount = 0
 
 @Composable
@@ -34,6 +35,20 @@ actual fun LockPlayerToLandscape() {
             if (playerLandscapeLockCount == 0) {
                 NSNotificationCenter.defaultCenter.postNotificationName(
                     unlockPlayerOrientationNotification,
+                    null,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal actual fun rememberPlayerOrientationController(): PlayerOrientationController? {
+    return remember {
+        object : PlayerOrientationController {
+            override fun setPortrait(portrait: Boolean) {
+                NSNotificationCenter.defaultCenter.postNotificationName(
+                    if (portrait) lockPlayerPortraitNotification else lockPlayerToLandscapeNotification,
                     null,
                 )
             }

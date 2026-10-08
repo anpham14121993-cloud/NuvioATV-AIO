@@ -336,6 +336,8 @@ tasks.withType<KotlinCompilationTask<*>>().configureEach {
     dependsOn(generateRuntimeConfigs)
 }
 
+val buildIos = providers.gradleProperty("buildIos").map(String::toBooleanStrict).getOrElse(false)
+
 kotlin {
     android {
         namespace = "com.nuvio.app"
@@ -353,10 +355,14 @@ kotlin {
         }
     }
     
-    val iosTargets = listOf(
-        iosArm64(),
-        iosSimulatorArm64()
-    )
+    val iosTargets = if (buildIos) {
+        listOf(
+            iosArm64(),
+            iosSimulatorArm64()
+        )
+    } else {
+        emptyList()
+    }
 
     iosTargets.forEach { iosTarget ->
         val nuvioEngineSlice = if (iosTarget.name == "iosArm64") {
@@ -529,7 +535,9 @@ kotlin {
 }
 
 configurations.matching { it.name == "iosMainImplementation" }.configureEach {
-    project.dependencies.add(name, libs.ktor.client.darwin)
+    if (buildIos) {
+        project.dependencies.add(name, libs.ktor.client.darwin)
+    }
 }
 
 configurations.all {

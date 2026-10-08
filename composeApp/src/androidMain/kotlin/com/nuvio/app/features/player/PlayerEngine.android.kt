@@ -119,12 +119,14 @@ actual fun PlatformPlayerSurface(
         PlayerSettingsRepository.ensureLoaded()
         PlayerSettingsRepository.uiState.value
     }
+    val normalizedStreamType = normalizeStreamType(streamType)
+    val isDirectMatroska = normalizedStreamType.isMatroskaStreamType() || isMatroskaSourceUrl(sourceUrl)
     val playerSourceKey = listOf(
         sourceUrl,
         sourceAudioUrl.orEmpty(),
         sanitizePlaybackHeaders(sourceHeaders),
         sanitizePlaybackResponseHeaders(sourceResponseHeaders),
-        normalizeStreamType(streamType).orEmpty(),
+        normalizedStreamType.orEmpty(),
         useYoutubeChunkedPlayback,
         initialPositionRequestKey.orEmpty(),
     )
@@ -152,7 +154,7 @@ actual fun PlatformPlayerSurface(
             onControllerReady = onControllerReady,
             onSnapshot = onSnapshot,
             onError = { message ->
-                if (message != null && requestedEngine == AndroidPlaybackEngine.Auto) {
+                if (message != null) {
                     Log.w(TAG, "ExoPlayer failed; falling back to libmpv: $message")
                     initialPositionRequestKey?.let { key ->
                         onInitialPositionHandled(key, false)
@@ -179,7 +181,7 @@ actual fun PlatformPlayerSurface(
                 playWhenReady = playWhenReady,
                 resizeMode = resizeMode,
                 videoOutput = playerSettings.androidLibmpvVideoOutput,
-                hardwareDecodingEnabled = playerSettings.androidLibmpvHardwareDecodingEnabled,
+                hardwareDecodingEnabled = playerSettings.androidLibmpvHardwareDecodingEnabled && !isDirectMatroska,
                 yuv420pEnabled = playerSettings.androidLibmpvYuv420pEnabled,
                 onControllerReady = onControllerReady,
                 onSnapshot = onSnapshot,
@@ -200,6 +202,37 @@ private fun AndroidPlaybackEngine.initialAndroidEngine(): ResolvedAndroidPlaybac
         AndroidPlaybackEngine.ExoPlayer -> ResolvedAndroidPlaybackEngine.ExoPlayer
         AndroidPlaybackEngine.Libmpv -> ResolvedAndroidPlaybackEngine.Libmpv
     }
+
+private fun String?.isMatroskaStreamType(): Boolean =
+    this == "matroska" || this == "mkv"
+
+private fun isMatroskaSourceUrl(sourceUrl: String?): Boolean {
+    if (sourceUrl.isNullOrBlank()) return false
+    val lower = sourceUrl.substringBefore('?').substringBefore('#').trimEnd('/').lowercase()
+    return lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".m4v")
+}
+
+private fun Format.dynamicRangeLabel(): String {
+    val mime = sampleMimeType.orEmpty()
+    val codec = codecs.orEmpty().lowercase()
+    if (
+        mime.equals("video/dolby-vision", ignoreCase = true) ||
+        codec.startsWith("dvhe") || codec.startsWith("dvh1") ||
+        codec.startsWith("dvav") || codec.startsWith("dva1")
+    ) {
+        return "Dolby Vision"
+    }
+    return when (colorInfo?.colorTransfer) {
+        C.COLOR_TRANSFER_ST2084 -> "HDR10"
+        C.COLOR_TRANSFER_HLG -> "HLG"
+        else ->
+            if (colorInfo?.colorSpace == C.COLOR_SPACE_BT2020) {
+                "HDR"
+            } else {
+                "SDR"
+            }
+    }
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -290,9 +323,15 @@ private fun ExoPlayerSurface(
     var probeAttempted by remember(playerSourceKey) { mutableStateOf(false) }
 
     val extractorsFactory = remember {
-        DefaultExtractorsFactory()
-            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
-            .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
+        // Thích ứng theo thiết bị: máy có decoder DV thì giữ DV (Exo giải mã thật),
+        // máy không có thì bỏ lớp DV để Exo giải lớp nền HEVC/H.264.
+        DolbyVisionExtractorsFactory(
+            delegate = DefaultExtractorsFactory()
+                .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
+                .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE),
+            stripDolbyVision = !DolbyVisionFallback.isDolbyVisionDecoderAvailable(),
+            injectHdrColorInfo = true,
+        )
     }
     val dataSourceFactory = remember(
         context,
@@ -820,6 +859,7 @@ private fun ExoPlayerSurface(
                         videoHeight = video?.height?.takeIf { it > 0 },
                         videoFrameRate = video?.frameRate?.takeIf { it > 0f },
                         videoBitrate = video?.bitrate?.takeIf { it > 0 },
+                        videoDynamicRange = video?.dynamicRangeLabel(),
                         audioCodec = CustomDefaultTrackNameProvider.formatNameFromMime(audio?.sampleMimeType),
                         audioChannels = audio?.channelCount?.takeIf { it > 0 },
                         audioSampleRate = audio?.sampleRate?.takeIf { it > 0 },

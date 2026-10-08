@@ -43,6 +43,9 @@ internal fun StreamInfoOverlay(
     addonSubtitle: AddonSubtitle?,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    providerUrl: String? = null,
+    bufferAheadMs: Long? = null,
+    sourceSpeed: String? = null,
 ) {
     PlayerOverlayScaffold(
         visible = visible,
@@ -132,6 +135,42 @@ internal fun StreamInfoOverlay(
                             audioTrack?.language?.takeIf { it.isNotBlank() }?.let { languageLabelForCode(it) },
                         )
                     }
+                }
+            }
+
+            if (!providerUrl.isNullOrBlank()) {
+                StreamInfoSection(stringResource(Res.string.stream_info_section_provider)) {
+                    StreamInfoItem(
+                        label = stringResource(Res.string.stream_info_provider),
+                        value = providerUrl,
+                    )
+                }
+            }
+
+            if (mediaInfo.videoDynamicRange != null) {
+                StreamInfoSection(stringResource(Res.string.stream_info_section_format)) {
+                    StreamInfoItem(
+                        label = stringResource(Res.string.stream_info_format_label),
+                        value = mediaInfo.videoDynamicRange,
+                    )
+                }
+            }
+
+            if (bufferAheadMs != null && bufferAheadMs > 0) {
+                StreamInfoSection(stringResource(Res.string.stream_info_section_buffer)) {
+                    StreamInfoItem(
+                        label = stringResource(Res.string.stream_info_buffer_loaded),
+                        value = "${bufferAheadMs / 1000}s",
+                    )
+                }
+            }
+
+            if (!sourceSpeed.isNullOrBlank()) {
+                StreamInfoSection(stringResource(Res.string.stream_info_section_speed)) {
+                    StreamInfoItem(
+                        label = stringResource(Res.string.stream_info_speed),
+                        value = sourceSpeed,
+                    )
                 }
             }
 

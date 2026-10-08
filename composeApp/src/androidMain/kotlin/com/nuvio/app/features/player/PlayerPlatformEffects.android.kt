@@ -45,6 +45,23 @@ actual fun LockPlayerToLandscape() {
 }
 
 @Composable
+internal actual fun rememberPlayerOrientationController(): PlayerOrientationController? {
+    val context = LocalContext.current
+    val activity = context.findActivity() ?: return null
+    return remember(activity) {
+        object : PlayerOrientationController {
+            override fun setPortrait(portrait: Boolean) {
+                activity.requestedOrientation = if (portrait) {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                }
+            }
+        }
+    }
+}
+
+@Composable
 actual fun FullscreenPlayerDialog(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     Dialog(
         onDismissRequest = onDismiss,

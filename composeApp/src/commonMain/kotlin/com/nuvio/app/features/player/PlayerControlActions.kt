@@ -14,14 +14,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SwapHoriz
@@ -31,11 +29,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,7 +41,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nuvio.app.core.ui.AppIconResource
-import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.appIconPainter
 import com.nuvio.app.core.ui.nuvioTypeScale
 import nuvio.composeapp.generated.resources.*
@@ -56,27 +48,27 @@ import org.jetbrains.compose.resources.stringResource
 
 @Composable
 internal fun PlayerToolbar(
-    isLocked: Boolean,
-    onLockToggle: () -> Unit,
     onBack: () -> Unit,
+    onRotateClick: () -> Unit,
+    onStreamInfoClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        PlayerAction(
+            description = stringResource(Res.string.compose_player_close),
+            icon = Icons.AutoMirrored.Rounded.ArrowBack,
+            onClick = onBack,
+        )
         Spacer(Modifier.weight(1f))
         PlayerAction(
-            description = stringResource(
-                if (isLocked) Res.string.compose_player_unlock_controls else Res.string.compose_player_lock_controls,
-            ),
-            icon = if (isLocked) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
-            onClick = onLockToggle,
+            description = stringResource(Res.string.compose_player_rotate_to_landscape),
+            icon = Icons.Rounded.ScreenRotation,
+            onClick = onRotateClick,
         )
-        NuvioBackButton(
-            onClick = onBack,
-            containerColor = Color.Transparent,
-            contentColor = Color.White,
-            buttonSize = 48.dp,
-            iconSize = 24.dp,
-            contentDescription = stringResource(Res.string.compose_player_close),
+        PlayerAction(
+            description = stringResource(Res.string.compose_player_stream_info),
+            icon = Icons.Rounded.Info,
+            onClick = onStreamInfoClick,
         )
     }
 }
@@ -99,7 +91,6 @@ internal fun PlayerControlActions(
     onResizeModeClick: () -> Unit,
     onVideoSettingsClick: (() -> Unit)?,
     onOpenInExternalPlayer: (() -> Unit)?,
-    onStreamInfoClick: () -> Unit,
     onSubmitIntroClick: (() -> Unit)?,
     onInteraction: () -> Unit,
 ) {
@@ -150,10 +141,6 @@ internal fun PlayerControlActions(
                 icon = Icons.AutoMirrored.Rounded.OpenInNew,
             )
         },
-        PlayerControlAction(
-            stringResource(Res.string.cd_stream_info), onStreamInfoClick,
-            icon = Icons.Rounded.Info,
-        ),
         onVideoSettingsClick?.let {
             PlayerControlAction(
                 stringResource(Res.string.player_action_video_settings), it,
@@ -167,13 +154,8 @@ internal fun PlayerControlActions(
             )
         },
     )
-    val hasOverflow = actions.size > 5
-    var expanded by remember(hasOverflow) { mutableStateOf(false) }
     val scrollState = rememberScrollState()
     val startOffset = if (onNextEpisodeClick != null) (-13).dp else (-12).dp
-    LaunchedEffect(expanded, scrollState.maxValue) {
-        if (expanded) scrollState.animateScrollTo(scrollState.maxValue) else scrollState.scrollTo(0)
-    }
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = PlayerTimelineContentInset),
@@ -184,7 +166,7 @@ internal fun PlayerControlActions(
                 modifier = Modifier.weight(1f).offset(x = startOffset).horizontalScroll(scrollState),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                actions.take(if (expanded) actions.size else 5).forEach { action ->
+                actions.forEach { action ->
                     PlayerAction(
                         description = action.description,
                         onClick = {
@@ -194,18 +176,6 @@ internal fun PlayerControlActions(
                         icon = action.icon,
                         painter = action.painter,
                         iconSize = action.iconSize,
-                    )
-                }
-                if (hasOverflow) {
-                    PlayerAction(
-                        description = stringResource(
-                            if (expanded) Res.string.compose_player_fewer_actions else Res.string.compose_player_more_actions,
-                        ),
-                        onClick = {
-                            expanded = !expanded
-                            onInteraction()
-                        },
-                        icon = if (expanded) Icons.AutoMirrored.Rounded.KeyboardArrowLeft else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                     )
                 }
             }

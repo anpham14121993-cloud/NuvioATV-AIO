@@ -31,8 +31,8 @@ import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Replay10
+import androidx.compose.material.icons.rounded.ScreenRotation
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +67,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.LayoutDirection
 import com.nuvio.app.core.ui.AppIconResource
-import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.themePalette
 import com.nuvio.app.core.ui.accentBrush
 import com.nuvio.app.core.ui.appIconPainter
@@ -88,7 +87,6 @@ internal fun PlayerControlsShell(
     displayedPositionMs: Long,
     metrics: PlayerLayoutMetrics,
     resizeMode: PlayerResizeMode,
-    isLocked: Boolean,
     useLegacyLayout: Boolean = false,
     showRemainingTime: Boolean = false,
     onRuntimeClick: () -> Unit = {},
@@ -97,7 +95,7 @@ internal fun PlayerControlsShell(
     onNextEpisodeClick: (() -> Unit)? = null,
     onInteraction: () -> Unit = {},
     showPlaybackControls: Boolean = true,
-    onLockToggle: () -> Unit,
+    onRotateClick: () -> Unit,
     onBack: () -> Unit,
     onTogglePlayback: () -> Unit,
     onSeekBack: () -> Unit,
@@ -173,16 +171,14 @@ internal fun PlayerControlsShell(
                     episodeNumber = episodeNumber,
                     episodeTitle = episodeTitle,
                     metrics = metrics,
-                    isLocked = isLocked,
                     showActions = showPlaybackControls,
                     onSubmitIntroClick = onSubmitIntroClick,
                     parentalWarnings = parentalWarnings,
                     showParentalGuide = showParentalGuide,
                     onParentalGuideAnimationComplete = onParentalGuideAnimationComplete,
-                    onLockToggle = onLockToggle,
+                    onRotateClick = onRotateClick,
                     onVideoSettingsClick = onVideoSettingsClick,
                     onOpenInExternalPlayer = onOpenInExternalPlayer,
-                    onBack = onBack,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .fillMaxWidth()
@@ -196,13 +192,14 @@ internal fun PlayerControlsShell(
             } else {
                 if (showPlaybackControls) {
                     PlayerToolbar(
-                        isLocked = isLocked,
-                        onLockToggle = onLockToggle,
                         onBack = onBack,
+                        onRotateClick = onRotateClick,
+                        onStreamInfoClick = onStreamInfoClick,
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
+                            .align(Alignment.TopStart)
+                            .fillMaxWidth()
                             .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Top))
-                            .padding(horizontal = metrics.horizontalPadding, vertical = metrics.verticalPadding / 4),
+                            .padding(vertical = metrics.verticalPadding / 4),
                     )
                 }
                 ParentalGuideOverlay(
@@ -309,7 +306,6 @@ internal fun PlayerControlsShell(
                         onResizeModeClick = onResizeModeClick,
                         onVideoSettingsClick = onVideoSettingsClick,
                         onOpenInExternalPlayer = onOpenInExternalPlayer,
-                        onStreamInfoClick = onStreamInfoClick,
                         onSubmitIntroClick = onSubmitIntroClick,
                         onInteraction = onInteraction,
                     )
@@ -328,16 +324,14 @@ private fun PlayerHeader(
     episodeNumber: Int?,
     episodeTitle: String?,
     metrics: PlayerLayoutMetrics,
-    isLocked: Boolean,
     showActions: Boolean,
     onSubmitIntroClick: (() -> Unit)?,
     parentalWarnings: List<ParentalWarning>,
     showParentalGuide: Boolean,
     onParentalGuideAnimationComplete: () -> Unit,
-    onLockToggle: () -> Unit,
+    onRotateClick: () -> Unit,
     onVideoSettingsClick: (() -> Unit)?,
     onOpenInExternalPlayer: (() -> Unit)?,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val typeScale = MaterialTheme.nuvioTypeScale
@@ -446,15 +440,11 @@ private fun PlayerHeader(
                         )
                     }
                     PlayerHeaderIconButton(
-                        icon = if (isLocked) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
-                        contentDescription = if (isLocked) {
-                            stringResource(Res.string.compose_player_unlock_controls)
-                        } else {
-                            stringResource(Res.string.compose_player_lock_controls)
-                        },
+                        icon = Icons.Rounded.ScreenRotation,
+                        contentDescription = stringResource(Res.string.compose_player_rotate_to_landscape),
                         buttonSize = metrics.headerIconSize + 16.dp,
                         iconSize = metrics.headerIconSize,
-                        onClick = onLockToggle,
+                        onClick = onRotateClick,
                     )
                     if (onVideoSettingsClick != null) {
                         PlayerHeaderIconButton(
@@ -465,14 +455,6 @@ private fun PlayerHeader(
                             onClick = onVideoSettingsClick,
                         )
                     }
-                    NuvioBackButton(
-                        onClick = onBack,
-                        containerColor = Color.Black.copy(alpha = 0.35f),
-                        contentColor = Color.White,
-                        buttonSize = metrics.headerIconSize + 16.dp,
-                        iconSize = metrics.headerIconSize,
-                        contentDescription = stringResource(Res.string.compose_player_close),
-                    )
                 }
             }
         }
