@@ -321,7 +321,7 @@ class VieneuNarrationEngine(
 
     private fun logMemory(tag: String) {
         try {
-            val am = context.getSystemService(android.app.ActivityManager::class.java)
+            val am = appContext.getSystemService(android.app.ActivityManager::class.java)
             val mi = am?.let { ActivityManager.MemoryInfo() }?.also { am.getMemoryInfo(it) }
             val runtime = Runtime.getRuntime()
             val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
@@ -330,7 +330,7 @@ class VieneuNarrationEngine(
             val low = mi?.lowMemory ?: false
             TtsTrace.log(
                 "$tag mem: heap=${usedMb}/${maxMb}MB avail=${availMb}MB lowRam=$low " +
-                    "largeHeap=${context.applicationInfo.largeHeap}",
+                    "largeHeap=${appContext.applicationInfo.largeHeap}",
             )
         } catch (t: Throwable) {
             TtsTrace.log("$tag mem: unavailable " + t.javaClass.simpleName)
