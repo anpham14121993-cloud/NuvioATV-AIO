@@ -1,0 +1,138 @@
+name: Build Android TV release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name for the TV build"
+        required: false
+        default: "0.5.8-tv"
+
+jobs:
+  native:
+    name: Build VieNeu native libraries
+    uses: ./.github/workflows/build-vieneu-native.yml
+
+  tv:
+    name: Build Android TV APK (armeabi-v7a)
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TV_VERSION: ${{ inputs.version }}
+      RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
+      MODELS_RELEASE_TAG: models-v1
+      MODELS_ASSET: vieneu-models.tar.gz
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-37.0 build-tools;37.0.0'
+
+      - name: Download bundled TTS models
+        run: |
+          mkdir -p "${RUNNER_TEMP}/models" vieneu/src/main/assets
+          gh release download "${MODELS_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${MODELS_ASSET}" \
+            --dir "${RUNNER_TEMP}/models" \
+            --clobber
+          tar -xzf "${RUNNER_TEMP}/models/${MODELS_ASSET}" -C vieneu/src/main/assets
+          ls -lh vieneu/src/main/assets
+
+      - name: Download native TTS libraries
+        uses: actions/download-artifact@v8
+        with:
+          name: vieneu-native
+          path: native-libs
+
+      - name: Place native TTS libraries
+        run: |
+          for abi in arm64-v8a armeabi-v7a; do
+            mkdir -p "vieneu/src/main/jniLibs/${abi}"
+            cp "native-libs/${abi}/libsea_g2p_rs.so" "vieneu/src/main/jniLibs/${abi}/"
+            cp "native-libs/${abi}/libg2pjni.so" "vieneu/src/main/jniLibs/${abi}/"
+          done
+          ls -lh vieneu/src/main/jniLibs/*/
+
+      - name: Configure release properties
+        run: |
+          keystore_path="${RUNNER_TEMP}/nuvio-release.jks"
+          printf '%s' "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > "${keystore_path}"
+          printf '%s' "${RELEASE_PROPERTIES_BASE64}" | base64 --decode > local.properties
+
+          sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
+          printf '\nNUVIO_RELEASE_STORE_FILE=%s\n' "${keystore_path}" >> local.properties
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build TV release APK
+        run: ./gradlew :androidApp:assembleTvRelease -Pnuvio.android.distribution=full -Pnuvio.app.versionName="${TV_VERSION}" --stacktrace
+
+      - name: Collect signed TV APK
+        run: |
+          mkdir -p release-apk-tv
+          apk="$(find androidApp/build/outputs/apk/tv/release -maxdepth 1 -name '*.apk' | head -n 1)"
+          if [[ -z "${apk}" ]]; then
+            echo "No TV release APK found" >&2
+            exit 1
+          fi
+          cp "${apk}" "release-apk-tv/nuvio-${TV_VERSION}-tv-armeabi-v7a.apk"
+          ls -lh release-apk-tv
+
+      - name: Upload TV artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuvio-tv-release
+          path: release-apk-tv/*.apk
+          if-no-files-found: error
+
+  release:
+    name: Publish TV release
+    needs: tv
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TV_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download TV artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        run: |
+          mapfile -t release_files < <(find release-assets -maxdepth 1 -type f -name '*.apk' -print | sort)
+          if (( ${#release_files[@]} == 0 )); then
+            echo "No TV packages were produced." >&2
+            exit 1
+          fi
+          tag="tv-${TV_VERSION}"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; updating assets only." >&2
+            gh release upload "${tag}" "${release_files[@]}" --clobber
+          else
+            gh release create "${tag}" "${release_files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Nuvio TV ${TV_VERSION}" \
+              --notes "Android TV build (armeabi-v7a) with offline VieNeu TTS narration."
+          fi
