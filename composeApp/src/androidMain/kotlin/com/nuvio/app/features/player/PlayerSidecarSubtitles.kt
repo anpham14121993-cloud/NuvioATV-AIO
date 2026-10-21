@@ -30,6 +30,8 @@ private const val SIDECAR_TAG = "NuvioSidecar"
 private val sidecarParserFactory = DefaultSubtitleParserFactory()
 private val mainHandler = Handler(Looper.getMainLooper())
 private const val SIDECAR_RENDER_INTERVAL_MS = 100L
+private const val PREFETCH_AHEAD_US = 300_000_000L
+private const val MAX_PREFETCH_CUES = 150
 private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO"
 
 internal class SidecarSubtitleController(
@@ -40,10 +42,26 @@ internal class SidecarSubtitleController(
     private var sidecarSubtitleJob: Job? = null
     var activeSidecarSubtitleKey: String? = null
         private set
+    /**
+     * When true the sidecar only feeds TTS timing; the subtitle is still rendered
+     * by Media3/libass (used for .ass with libass on, which fits TTS perfectly).
+     */
+    var activeSidecarTtsOnly: Boolean = false
+        private set
     var sidecarTimedCues: List<CuesWithTiming> = emptyList()
         private set
     private var lastSidecarCueSignature: Long? = null
     private var exoSubtitleViewRef: WeakReference<SubtitleView>? = null
+
+    /** Fired with the currently visible cues whenever they change (e.g. for TTS narration). */
+    var onActiveCues: ((cues: List<Cue>, windowSec: Float?, fullWindowSec: Float?) -> Unit)? = null
+
+    /**
+     * Fired with upcoming (text, full-duration-window) pairs for TTS prefetch,
+     * so the next lines are synthesized before they appear. Deduped by content.
+     */
+    var onUpcomingCues: ((List<Pair<String, Float>>) -> Unit)? = null
+    private var lastUpcomingSignature: Long? = null
 
     fun isSidecarActive(): Boolean = activeSidecarSubtitleKey != null
 
@@ -52,6 +70,16 @@ internal class SidecarSubtitleController(
         if (mime == MimeTypes.TEXT_SSA && useLibass) {
             return false
         }
+        val format = Format.Builder().setSampleMimeType(mime).build()
+        return sidecarParserFactory.supportsFormat(format)
+    }
+
+    /**
+     * True when the parser can derive cue timings for [url] regardless of who
+     * renders it. Used to run a TTS-only sidecar alongside Media3/libass.
+     */
+    fun supportsTimingFor(url: String): Boolean {
+        val mime = PlayerSubtitleUtils.mimeTypeFromUrl(url)
         val format = Format.Builder().setSampleMimeType(mime).build()
         return sidecarParserFactory.supportsFormat(format)
     }
@@ -69,10 +97,12 @@ internal class SidecarSubtitleController(
     fun stopSidecarAddonSubtitle(clearView: Boolean = true) {
         sidecarSubtitleJob?.cancel()
         sidecarSubtitleJob = null
+        val wasRendering = !activeSidecarTtsOnly
         activeSidecarSubtitleKey = null
+        activeSidecarTtsOnly = false
         sidecarTimedCues = emptyList()
         lastSidecarCueSignature = null
-        if (clearView) {
+        if (clearView && wasRendering) {
             postToSubtitleView { view ->
                 view.setTag(R.id.player_view_sidecar_generation_tag, null)
                 view.setCues(emptyList())
@@ -84,19 +114,25 @@ internal class SidecarSubtitleController(
         url: String,
         headers: Map<String, String> = emptyMap(),
         useLibass: Boolean = false,
+        ttsOnly: Boolean = false,
     ): Boolean {
-        if (!canAttachAddonSubtitleViaSidecar(url, useLibass)) return false
+        val allowed = if (ttsOnly) supportsTimingFor(url) else canAttachAddonSubtitleViaSidecar(url, useLibass)
+        if (!allowed) return false
 
         val subtitleKey = url
         val urlMimeHint = PlayerSubtitleUtils.mimeTypeFromUrl(url)
 
         sidecarSubtitleJob?.cancel()
         activeSidecarSubtitleKey = subtitleKey
+        activeSidecarTtsOnly = ttsOnly
         lastSidecarCueSignature = null
+        lastUpcomingSignature = null
         sidecarTimedCues = emptyList()
-        postToSubtitleView { view ->
-            view.setTag(R.id.player_view_sidecar_generation_tag, subtitleKey)
-            view.setCues(emptyList())
+        if (!ttsOnly) {
+            postToSubtitleView { view ->
+                view.setTag(R.id.player_view_sidecar_generation_tag, subtitleKey)
+                view.setCues(emptyList())
+            }
         }
 
         sidecarSubtitleJob = scope.launch {
@@ -118,10 +154,13 @@ internal class SidecarSubtitleController(
                         "Sidecar subtitle parse empty for url=$url urlMime=$urlMimeHint sniffed=$resolvedMime (buffer preserved; no media reload)"
                     )
                     activeSidecarSubtitleKey = null
+                    activeSidecarTtsOnly = false
                     sidecarTimedCues = emptyList()
-                    postToSubtitleView { view ->
-                        view.setTag(R.id.player_view_sidecar_generation_tag, null)
-                        view.setCues(emptyList())
+                    if (!ttsOnly) {
+                        postToSubtitleView { view ->
+                            view.setTag(R.id.player_view_sidecar_generation_tag, null)
+                            view.setCues(emptyList())
+                        }
                     }
                     return@launch
                 }
@@ -145,10 +184,13 @@ internal class SidecarSubtitleController(
                     "Sidecar subtitle failed url=$url: ${e.message} (buffer preserved; no media reload)"
                 )
                 activeSidecarSubtitleKey = null
+                activeSidecarTtsOnly = false
                 sidecarTimedCues = emptyList()
-                postToSubtitleView { view ->
-                    view.setTag(R.id.player_view_sidecar_generation_tag, null)
-                    view.setCues(emptyList())
+                if (!ttsOnly) {
+                    postToSubtitleView { view ->
+                        view.setTag(R.id.player_view_sidecar_generation_tag, null)
+                        view.setCues(emptyList())
+                    }
                 }
             }
         }
@@ -161,16 +203,53 @@ internal class SidecarSubtitleController(
         val player = getPlayer() ?: return
         val delayUs = getSubtitleDelayMs().toLong() * 1_000L
         val positionUs = (player.currentPosition.coerceAtLeast(0L) * 1_000L - delayUs).coerceAtLeast(0L)
+        publishUpcomingCues(cues, positionUs)
         val active = collectActiveSidecarCues(cues, positionUs)
         val signature = activeCueSignature(active)
         if (signature == lastSidecarCueSignature) return
         lastSidecarCueSignature = signature
+        if (active.isNotEmpty()) {
+            val budgetSec = untilNextCueStartSec(cues, positionUs)
+            val rateWindowSec = activeRateWindowSec(cues, positionUs)
+            runCatching { onActiveCues?.invoke(active, budgetSec, rateWindowSec) }
+        }
+        if (activeSidecarTtsOnly) return
         val currentKey = activeSidecarSubtitleKey ?: return
         postToSubtitleView { view ->
             if (view.getTag(R.id.player_view_sidecar_generation_tag) == currentKey) {
                 view.setCues(active)
             }
         }
+    }
+
+    private fun publishUpcomingCues(cues: List<CuesWithTiming>, positionUs: Long) {
+        val upcoming = ArrayList<Pair<String, Float>>(2)
+        for (index in cues.indices) {
+            val entry = cues[index]
+            if (entry.startTimeUs <= positionUs) continue
+            if (entry.startTimeUs - positionUs > PREFETCH_AHEAD_US) break
+            val text = TtsNarrationController.combineCueTexts(entry.cues) ?: continue
+            // Speech slot = this cue's start -> the NEXT cue's start. The rate is
+            // chosen to fit that slot (may exceed this cue's own end time, using
+            // the gap, but must not run past the next cue's start).
+            val next = nextCueStartUs(cues, entry.startTimeUs, index + 1)
+            val window = if (next != null && next > entry.startTimeUs) {
+                (next - entry.startTimeUs) / 1_000_000f
+            } else {
+                0f
+            }
+            upcoming.add(text to window)
+            if (upcoming.size >= MAX_PREFETCH_CUES) break
+        }
+        if (upcoming.isEmpty()) return
+        var signature = upcoming.size.toLong()
+        for ((text, window) in upcoming) {
+            signature = 31L * signature + text.hashCode()
+            signature = 31L * signature + window.toBits().toLong()
+        }
+        if (signature == lastUpcomingSignature) return
+        lastUpcomingSignature = signature
+        runCatching { onUpcomingCues?.invoke(upcoming) }
     }
 
     private fun postToSubtitleView(block: (SubtitleView) -> Unit) {
@@ -286,8 +365,61 @@ internal fun parseSidecarTimedCuesLenient(rawText: String, sourceUrl: String): L
     return out
 }
 
-private fun collectActiveSidecarCues(
+/** Start time (us) of the next cue strictly after [afterStartUs], or null. */
+private fun nextCueStartUs(
     cues: List<CuesWithTiming>,
+    afterStartUs: Long,
+    fromIndex: Int,
+): Long? {
+    var i = fromIndex
+    while (i < cues.size) {
+        if (cues[i].startTimeUs > afterStartUs) return cues[i].startTimeUs
+        i++
+    }
+    return null
+}
+
+/** Index of the last cue that has already started at [positionUs], or -1. */
+private fun activeEntryIndex(cues: List<CuesWithTiming>, positionUs: Long): Int {
+    var idx = -1
+    for (i in cues.indices) {
+        if (cues[i].startTimeUs <= positionUs) idx = i else break
+    }
+    return idx
+}
+
+/**
+ * Seconds from now until the next cue's start: the hard stop for the current
+ * line. Narration may run past the current cue's own end (using the gap) but
+ * must never spill into the next cue. Null when there is no following cue.
+ */
+private fun untilNextCueStartSec(
+    cues: List<CuesWithTiming>,
+    positionUs: Long,
+): Float? {
+    val i = activeEntryIndex(cues, positionUs)
+    if (i < 0) return null
+    val next = nextCueStartUs(cues, cues[i].startTimeUs, i + 1) ?: return null
+    return ((next - positionUs) / 1_000_000f).coerceAtLeast(0f)
+}
+
+/**
+ * Speech slot for the active cue = its start -> the NEXT cue's start. The rate is
+ * chosen to fit this slot, so the prefetch pass and the speak pass pick the exact
+ * same rate and hit the cache (see publishUpcomingCues). Null -> natural rate.
+ */
+private fun activeRateWindowSec(
+    cues: List<CuesWithTiming>,
+    positionUs: Long,
+): Float? {
+    val i = activeEntryIndex(cues, positionUs)
+    if (i < 0) return null
+    val next = nextCueStartUs(cues, cues[i].startTimeUs, i + 1) ?: return null
+    val d = next - cues[i].startTimeUs
+    return if (d > 0) d / 1_000_000f else null
+}
+
+private fun collectActiveSidecarCues(    cues: List<CuesWithTiming>,
     positionUs: Long
 ): List<Cue> {
     if (cues.isEmpty()) return emptyList()

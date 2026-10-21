@@ -166,7 +166,7 @@ internal expect object PlayerSettingsStorage {
     fun saveIosAudioOutputMode(mode: String)
     fun loadIosExtendedDynamicRangeEnabled(): Boolean?
     fun saveIosExtendedDynamicRangeEnabled(enabled: Boolean)
-    fun loadIosTargetColorspaceHintEnabled(): Boolean?
+fun loadIosTargetColorspaceHintEnabled(): Boolean?
     fun saveIosTargetColorspaceHintEnabled(enabled: Boolean)
     fun loadIosHdrComputePeakEnabled(): Boolean?
     fun saveIosHdrComputePeakEnabled(enabled: Boolean)
@@ -182,6 +182,14 @@ internal expect object PlayerSettingsStorage {
     fun saveIosSaturation(value: Int)
     fun loadIosGamma(): Int?
     fun saveIosGamma(value: Int)
+
+    fun loadParallelConnections(): Int?
+    fun saveParallelConnections(connections: Int)
+    fun loadChunkSizeMb(): Int?
+    fun saveChunkSizeMb(sizeMb: Int)
+    fun loadChunkCount(): Int?
+    fun saveChunkCount(count: Int)
+
     fun exportToSyncPayload(): JsonObject
     fun replaceFromSyncPayload(payload: JsonObject)
 }

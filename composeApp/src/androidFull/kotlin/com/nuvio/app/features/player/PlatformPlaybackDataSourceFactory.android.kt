@@ -8,18 +8,26 @@ import com.nuvio.app.features.trailer.YoutubeChunkedDataSourceFactory
 internal object PlatformPlaybackDataSourceFactory {
     fun create(
         context: Context,
-        defaultRequestHeaders: Map<String, String>,
-        defaultResponseHeaders: Map<String, String>,
-        useYoutubeChunkedPlayback: Boolean,
+        sourceUrl: String = "",
+        defaultRequestHeaders: Map<String, String> = emptyMap(),
+        defaultResponseHeaders: Map<String, String> = emptyMap(),
+        useYoutubeChunkedPlayback: Boolean = false,
         useLongReadTimeout: Boolean = false,
         externalSubtitles: List<com.nuvio.app.features.streams.StreamSubtitle> = emptyList(),
     ): DataSource.Factory {
+        val parallelConnections = PlayerSettingsRepository.uiState.value.parallelConnections
+        val chunkSizeMb = PlayerSettingsRepository.uiState.value.chunkSizeMb
+        val chunkCount = PlayerSettingsRepository.uiState.value.chunkCount
         val networkFactory: DataSource.Factory = if (useYoutubeChunkedPlayback) {
             YoutubeChunkedDataSourceFactory(defaultRequestHeaders = defaultRequestHeaders)
         } else {
             PlayerPlaybackNetworking.createHttpDataSourceFactory(
-                defaultRequestHeaders,
-                useLongReadTimeout,
+                sourceUrl = sourceUrl,
+                defaultHeaders = defaultRequestHeaders,
+                useLongReadTimeout = useLongReadTimeout,
+                parallelConnections = parallelConnections,
+                chunkSizeMb = chunkSizeMb,
+                chunkCount = chunkCount,
             )
         }
         val subtitleHeaderFactory = SubtitleRequestHeaderDataSourceFactory(

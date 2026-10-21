@@ -37,3 +37,6 @@ iosApp/Configuration/DeviceSigning.local.json
 
 # Local MPVKit iOS build environment (sparse APFS image, see MPVKit docs)
 .mpvkit-build.sparseimage
+
+# VieNeu TTS model weights (downloaded in CI from the models-v1 release asset)
+vieneu/src/main/assets/

@@ -128,11 +128,18 @@ enum class IosVideoOutputPreset(
     ),
 }
 
+/** Narration voice for the offline Vietnamese TTS engine. */
+enum class TtsNarrationVoice(
+    val apiName: String,
+) {
+    Female("Thùy Dung"),
+    Male("Adam"),
+}
+
 enum class IosToneMappingMode(
     val mpvValue: String,
     val label: String,
-) {
-    Auto("auto", "Auto"),
+) {    Auto("auto", "Auto"),
     Bt2390("bt.2390", "BT.2390"),
     Mobius("mobius", "Mobius"),
     Reinhard("reinhard", "Reinhard"),

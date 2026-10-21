@@ -135,6 +135,8 @@ internal fun PlayerScreenModalHosts(
         subtitleDelayMs = subtitleDelayMs,
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
+        ttsNarrationEnabled = playerSettings.ttsNarrationEnabled,
+        onTtsNarrationChanged = PlayerSettingsRepository::setTtsNarrationEnabled,
         onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
         onAddonSubtitleSelected = onAddonSubtitleSelected,
         onFetchAddonSubtitles = onFetchAddonSubtitles,

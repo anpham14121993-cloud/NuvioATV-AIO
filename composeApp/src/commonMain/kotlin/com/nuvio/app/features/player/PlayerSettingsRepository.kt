@@ -108,6 +108,16 @@ data class PlayerSettingsUiState(
     val iosContrast: Int = 0,
     val iosSaturation: Int = 0,
     val iosGamma: Int = 0,
+    val parallelConnections: Int = 1,
+    val chunkSizeMb: Int = 1,
+    val chunkCount: Int = 1,
+    // Android-only: persisted locally on Android (TTS engine availability is per-device,
+    // so this is intentionally NOT synced). iOS always sees the default.
+    val ttsNarrationEnabled: Boolean = false,
+    val ttsNarrationVolume: Int = 100,
+    val ttsNarrationVoice: TtsNarrationVoice = TtsNarrationVoice.Female,
+    /** Movie volume (percent) while narration speaks. */
+    val ttsDuckVolume: Int = 50,
 )
 
 object PlayerSettingsRepository {
@@ -190,6 +200,13 @@ object PlayerSettingsRepository {
     private var iosContrast = 0
     private var iosSaturation = 0
     private var iosGamma = 0
+    private var parallelConnections = 1
+    private var chunkSizeMb = 1
+    private var chunkCount = 1
+    private var ttsNarrationEnabled = false
+    private var ttsNarrationVolume = 100
+    private var ttsNarrationVoice = TtsNarrationVoice.Female
+    private var ttsDuckVolume = 50
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -278,6 +295,17 @@ object PlayerSettingsRepository {
         iosContrast = 0
         iosSaturation = 0
         iosGamma = 0
+        parallelConnections = 1
+        chunkSizeMb = 1
+        chunkCount = 1
+        ttsNarrationEnabled = false
+        ttsNarrationVolume = 100
+        ttsNarrationVoice = TtsNarrationVoice.Female
+        ttsDuckVolume = 50
+        ttsTouchedByUser = false
+        ttsLastVoiceWriteSource = "none"
+        ttsVoiceTapCount = 0
+        ttsLastTappedVoice = "none"
         publish()
     }
 
@@ -442,6 +470,9 @@ object PlayerSettingsRepository {
         iosContrast = PlayerSettingsStorage.loadIosContrast() ?: 0
         iosSaturation = PlayerSettingsStorage.loadIosSaturation() ?: 0
         iosGamma = PlayerSettingsStorage.loadIosGamma() ?: 0
+        parallelConnections = PlayerSettingsStorage.loadParallelConnections() ?: 1
+        chunkSizeMb = PlayerSettingsStorage.loadChunkSizeMb() ?: 1
+        chunkCount = PlayerSettingsStorage.loadChunkCount() ?: 1
         publish()
     }
 
@@ -1126,6 +1157,107 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveIosGamma(iosGamma)
     }
 
+    fun setParallelConnections(connections: Int) {
+        ensureLoaded()
+        val coerced = connections.coerceIn(1, 8)
+        if (parallelConnections == coerced) return
+        parallelConnections = coerced
+        publish()
+        PlayerSettingsStorage.saveParallelConnections(coerced)
+    }
+
+    fun setChunkSizeMb(sizeMb: Int) {
+        ensureLoaded()
+        val coerced = sizeMb.coerceIn(1, 64)
+        if (chunkSizeMb == coerced) return
+        chunkSizeMb = coerced
+        publish()
+        PlayerSettingsStorage.saveChunkSizeMb(coerced)
+    }
+
+    fun setChunkCount(count: Int) {
+        ensureLoaded()
+        val coerced = count.coerceIn(1, 16)
+        if (chunkCount == coerced) return
+        chunkCount = coerced
+        publish()
+        PlayerSettingsStorage.saveChunkCount(coerced)
+    }
+
+    /**
+     * Toggles Vietnamese subtitle narration (Android TTS). In-memory + published only;
+     * Android persists this locally (see TtsNarrationPrefs) because TTS voice
+     * availability is per-device. Not synced, not stored on iOS.
+     */
+    /**
+     * Android-only persistence hook for the TTS narration settings. The shared
+     * repository cannot touch platform storage (iOS has no equivalent), so the
+     * Android player installs a hook that mirrors changes into local prefs.
+     *
+     * Field-level saves (NOT full-state snapshots): a settings tap must never
+     * clobber another field that is still loading. Invoked after every TTS
+     * setter with just that field; must be fast and non-suspending.
+     */
+    var ttsPersistHook: ((field: String, state: PlayerSettingsUiState) -> Unit)? = null
+
+    /** Field keys for [ttsPersistHook]. */
+    object TtsPersistField {
+        const val ENABLED = "enabled"
+        const val VOLUME = "volume"
+        const val VOICE = "voice"
+        const val DUCK = "duck"
+    }
+
+    /** True once the user changes any TTS setting (process lifetime). */
+    var ttsTouchedByUser = false
+        private set
+
+    /** Which call site last wrote the TTS voice (diagnostics). */
+    var ttsLastVoiceWriteSource = "none"
+
+    /** Taps received on the voice selector, even no-op ones (diagnostics). */
+    var ttsVoiceTapCount = 0
+    var ttsLastTappedVoice = "none"
+
+    private fun publishTts(field: String) {
+        ttsTouchedByUser = true
+        publish()
+        runCatching { ttsPersistHook?.invoke(field, _uiState.value) }
+    }
+
+    fun setTtsNarrationEnabled(enabled: Boolean) {
+        ensureLoaded()
+        if (ttsNarrationEnabled == enabled) return
+        ttsNarrationEnabled = enabled
+        publishTts(TtsPersistField.ENABLED)
+    }
+
+    fun setTtsNarrationVolume(volumePercent: Int) {
+        ensureLoaded()
+        val coerced = volumePercent.coerceIn(0, 100)
+        if (ttsNarrationVolume == coerced) return
+        ttsNarrationVolume = coerced
+        publishTts(TtsPersistField.VOLUME)
+    }
+
+    fun setTtsNarrationVoice(voice: TtsNarrationVoice, source: String = "?") {
+        ensureLoaded()
+        ttsVoiceTapCount += 1
+        ttsLastTappedVoice = voice.name
+        if (ttsNarrationVoice == voice) return
+        ttsNarrationVoice = voice
+        ttsLastVoiceWriteSource = source
+        publishTts(TtsPersistField.VOICE)
+    }
+
+    fun setTtsDuckVolume(volumePercent: Int) {
+        ensureLoaded()
+        val coerced = volumePercent.coerceIn(5, 100)
+        if (ttsDuckVolume == coerced) return
+        ttsDuckVolume = coerced
+        publishTts(TtsPersistField.DUCK)
+    }
+
     fun resetIosVideoOutputTuning() {
         ensureLoaded()
         iosBrightness = 0
@@ -1230,6 +1362,13 @@ object PlayerSettingsRepository {
             iosContrast = iosContrast,
             iosSaturation = iosSaturation,
             iosGamma = iosGamma,
+            parallelConnections = parallelConnections,
+            chunkSizeMb = chunkSizeMb,
+            chunkCount = chunkCount,
+            ttsNarrationEnabled = ttsNarrationEnabled,
+            ttsNarrationVolume = ttsNarrationVolume,
+            ttsNarrationVoice = ttsNarrationVoice,
+            ttsDuckVolume = ttsDuckVolume,
         )
     }
 

@@ -140,10 +140,14 @@ jobs:
     if: inputs.mode != 'dry-run'
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.tag }}
       RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
       RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
+      MODELS_RELEASE_TAG: models-v1
+      MODELS_ASSET: vieneu-models.tar.gz
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Check out source
@@ -157,6 +161,24 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Install Android SDK platform
+        run: |
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37" \
+            "build-tools;37.0.0" \
+            "platform-tools" >/dev/null
+
+      - name: Download bundled TTS models
+        run: |
+          mkdir -p "${RUNNER_TEMP}/models" vieneu/src/main/assets
+          gh release download "${MODELS_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${MODELS_ASSET}" \
+            --dir "${RUNNER_TEMP}/models" \
+            --clobber
+          tar -xzf "${RUNNER_TEMP}/models/${MODELS_ASSET}" -C vieneu/src/main/assets
+          ls -lh vieneu/src/main/assets
 
       - name: Configure release properties
         run: |
@@ -182,13 +204,24 @@ jobs:
           done
 
       - name: Build full release APKs
-        run: ./gradlew :androidApp:assembleFullRelease -Pnuvio.app.versionName="${RELEASE_VERSION}" --stacktrace
+        run: ./gradlew :androidApp:assembleFullRelease -Pnuvio.android.distribution=full -Pnuvio.app.versionName="${RELEASE_VERSION}" --stacktrace
+
+      - name: Collect signed APK
+        run: |
+          mkdir -p release-apk
+          apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name '*.apk' | head -n 1)"
+          if [[ -z "${apk}" ]]; then
+            echo "No release APK found" >&2
+            exit 1
+          fi
+          cp "${apk}" "release-apk/nuvio-${RELEASE_VERSION}-arm64-v8a.apk"
+          ls -lh release-apk
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v7
         with:
           name: nuvio-${{ needs.prepare.outputs.version }}-android-full-release
-          path: androidApp/build/outputs/apk/full/release/*.apk
+          path: release-apk/*.apk
           if-no-files-found: error
 
   ios:

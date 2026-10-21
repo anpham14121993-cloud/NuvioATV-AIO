@@ -32,6 +32,9 @@ internal data class GitHubAssetDto(
 internal class NoChannelReleaseException : IllegalStateException()
 
 internal object AppUpdaterRepository {
+    private const val REPO_OWNER = "anpham14121993-cloud"
+    private const val REPO_NAME = "NuvioMobile-AIO"
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -40,7 +43,7 @@ internal object AppUpdaterRepository {
     suspend fun getLatestChannelUpdate(channel: UpdateChannel): Result<AppUpdate> = runCatching {
         val response = httpRequestRaw(
             method = "GET",
-            url = "https://api.github.com/repos/NuvioMedia/NuvioMobile/${releasePath(channel)}",
+            url = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/${releasePath(channel)}",
             headers = mapOf(
                 "Accept" to "application/vnd.github+json",
                 "User-Agent" to "NuvioMobile",

@@ -6,6 +6,8 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.nuvio.app.core.diagnostics.SentryNetworkBreadcrumbInterceptor
 import com.nuvio.app.core.network.IPv4FirstDns
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.net.HttpURLConnection
 import java.net.URL
@@ -43,8 +45,19 @@ internal object PlayerPlaybackNetworking {
         }
     }
 
-    private val playbackHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+    private fun buildPlaybackHttpClient(parallelConnections: Int): OkHttpClient {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = parallelConnections * 2
+            maxRequestsPerHost = parallelConnections
+        }
+        val connectionPool = ConnectionPool(
+            maxIdleConnections = (parallelConnections * 2).coerceIn(8, 64),
+            keepAliveDuration = 5,
+            timeUnit = TimeUnit.MINUTES
+        )
+        return OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectionPool(connectionPool)
             .dns(IPv4FirstDns())
             .sslSocketFactory(sslContext.socketFactory, trustAllManager)
             .hostnameVerifier(playbackHostnameVerifier)
@@ -58,8 +71,17 @@ internal object PlayerPlaybackNetworking {
             .build()
     }
 
-    private val loopbackPlaybackHttpClient: OkHttpClient by lazy {
-        playbackHttpClient.newBuilder()
+    private val playbackHttpClientCache = mutableMapOf<Int, OkHttpClient>()
+
+    private fun getPlaybackHttpClient(parallelConnections: Int): OkHttpClient {
+        return playbackHttpClientCache.getOrPut(parallelConnections) {
+            buildPlaybackHttpClient(parallelConnections)
+        }
+    }
+
+    private fun getLoopbackPlaybackHttpClient(parallelConnections: Int): OkHttpClient {
+        val baseClient = getPlaybackHttpClient(parallelConnections)
+        return baseClient.newBuilder()
             .addInterceptor { chain ->
                 val request = chain.request()
                 val requestChain = if (isLoopbackHost(request.url.host)) {
@@ -73,11 +95,19 @@ internal object PlayerPlaybackNetworking {
     }
 
     fun createHttpDataSourceFactory(
+        sourceUrl: String = "",
         defaultHeaders: Map<String, String> = emptyMap(),
         useLongReadTimeout: Boolean = false,
+        parallelConnections: Int = 1,
+        chunkSizeMb: Int = 1,
+        chunkCount: Int = 1,
     ): DataSource.Factory {
         val requestHeaders = sanitizeHeaders(defaultHeaders)
-        val baseClient = if (useLongReadTimeout) loopbackPlaybackHttpClient else playbackHttpClient
+        LastProbeStreamStore.record(url = sourceUrl, headers = requestHeaders)
+        val baseClient = if (useLongReadTimeout)
+            getLoopbackPlaybackHttpClient(parallelConnections)
+        else
+            getPlaybackHttpClient(parallelConnections)
         val client = requestHeaders.headerValue("Authorization")?.let { authorization ->
             baseClient.newBuilder()
                 .addNetworkInterceptor { chain ->
@@ -95,22 +125,30 @@ internal object PlayerPlaybackNetworking {
                 .build()
         } ?: baseClient
 
-        return OkHttpDataSource.Factory(client).apply {
+        val chunkSizeBytes = (chunkSizeMb * 1024 * 1024).coerceIn(64 * 1024, 64 * 1024 * 1024)
+        val userAgent = requestHeaders.headerValue("User-Agent") ?: DEFAULT_USER_AGENT
+
+        return NuvioOkHttpDataSourceFactory(
+            clientProvider = { client },
+            chunkSizeBytes = chunkSizeBytes,
+            userAgent = userAgent,
+        ).apply {
             setDefaultRequestProperties(requestHeaders)
-            if (requestHeaders.headerValue("User-Agent") == null) {
-                setUserAgent(DEFAULT_USER_AGENT)
-            }
         }
     }
 
     fun createDataSourceFactory(
         context: Context,
+        sourceUrl: String = "",
         defaultHeaders: Map<String, String> = emptyMap(),
         useLongReadTimeout: Boolean = false,
     ): DataSource.Factory {
+        val parallelConnections = PlayerSettingsRepository.uiState.value.parallelConnections
+        val chunkSizeMb = PlayerSettingsRepository.uiState.value.chunkSizeMb
+        val chunkCount = PlayerSettingsRepository.uiState.value.chunkCount
         return DefaultDataSource.Factory(
             context,
-            createHttpDataSourceFactory(defaultHeaders, useLongReadTimeout),
+            createHttpDataSourceFactory(sourceUrl, defaultHeaders, useLongReadTimeout, parallelConnections, chunkSizeMb, chunkCount),
         )
     }
 

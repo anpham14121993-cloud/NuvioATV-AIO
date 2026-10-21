@@ -570,6 +570,9 @@
     <string name="settings_advanced_clear_cw_cache">Xóa bộ nhớ đệm Tiếp tục xem</string>
     <string name="settings_advanced_clear_cw_cache_subtitle">Xóa dữ liệu được lưu vào bộ nhớ đệm Tiếp tục xem và làm mới tiến trình xem</string>
     <string name="settings_advanced_clear_cw_cache_done">Đã xóa bộ nhớ đệm</string>
+    <string name="settings_advanced_section_updates">CẬP NHẬT</string>
+    <string name="settings_advanced_check_updates">Kiểm tra cập nhật</string>
+    <string name="settings_advanced_check_updates_subtitle">Kiểm tra bản phát hành trên GitHub và cài bản mới nhất</string>
     <string name="settings_licenses_attributions_section_app">GIẤY PHÉP ỨNG DỤNG</string>
     <string name="settings_licenses_attributions_section_data">DỮ LIỆU &amp; DỊCH VỤ</string>
     <string name="settings_licenses_attributions_section_playback">GIẤY PHÉP PHÁT LẠI</string>
@@ -1182,6 +1185,12 @@
     <string name="settings_playback_subtitle_outline_description">Vẽ một đường viền quanh văn bản phụ đề</string>
     <string name="settings_playback_subtitle_show_preferred_only">Chỉ hiển thị ngôn ngữ ưu tiên</string>
     <string name="settings_playback_subtitle_show_preferred_only_description">Chỉ hiển thị phụ đề khớp với ngôn ngữ ưu tiên</string>
+    <string name="settings_playback_tts_narration">Thuyết minh giọng Việt</string>
+    <string name="settings_playback_tts_narration_description">Đọc phụ đề tiếng Việt thành tiếng và hạ nhỏ tiếng phim lúc đọc. Chạy hoàn toàn offline bằng model trong app; không cần mạng.</string>
+    <string name="settings_playback_tts_narration_volume">Âm lượng giọng đọc</string>
+    <string name="settings_playback_tts_narration_voice">Giọng đọc</string>
+    <string name="settings_playback_tts_narration_voice_female">Nữ (Thùy Dung)</string>
+    <string name="settings_playback_tts_narration_voice_male">Nam (Adam)</string>
     <string name="settings_playback_subtitle_size">Cỡ chữ</string>
     <string name="settings_playback_subtitle_strip_sdh">Loại bỏ chú thích phụ đề</string>
     <string name="settings_playback_subtitle_strip_sdh_description">Ẩn các mô tả âm thanh và nhãn người nói khỏi văn bản phụ đề.</string>
@@ -2427,5 +2436,23 @@
     <string name="stream_info_source">Nguồn</string>
     <string name="stream_info_subtitle_source_addon">Tiện ích</string>
     <string name="stream_info_subtitle_source_embedded">Nhúng</string>
-    <string name="stream_info_player_engine">Lõi trình phát</string>
+<string name="stream_info_player_engine">Lõi trình phát</string>
+
+    <string name="settings_playback_parallel_connections">Kết nối song song</string>
+    <string name="settings_playback_parallel_connections_description">Số lượng kết nối mạng đồng thời cho phát trực tuyến. Giá trị cao hơn có thể cải thiện tốc độ trên mạng nhanh nhưng có thể gây vấn đề trên mạng chậm hoặc với một số máy chủ.</string>
+    <string name="settings_playback_parallel_connections_dialog">Kết nối song song</string>
+    <string name="settings_playback_parallel_connections_value">%1$d kết nối</string>
+    <string name="settings_playback_chunk_size">Kích thước chunk</string>
+    <string name="settings_playback_chunk_size_description">Kích thước mỗi phần dữ liệu đọc từ mạng. Nhỏ hơn thì phát nhanh hơn và tua chính xác hơn; lớn hơn thì giảm số lượng request HTTP.</string>
+    <string name="settings_playback_chunk_size_value">%1$d MB</string>
+    <string name="settings_playback_chunk_count">Số chunk</string>
+    <string name="settings_playback_chunk_count_description">Số chunk cho mỗi đoạn trong luồng thích ứng (HLS/DASH).</string>
+    <string name="settings_playback_chunk_count_value">%1$d chunk</string>
+
+    <string name="settings_playback_measure_network">Đo kết nối mạng</string>
+    <string name="settings_playback_measure_network_description">Chạy kiểm tra băng thông để xác định cài đặt kết nối song song tối ưu cho mạng hiện tại.</string>
+    <string name="settings_playback_measure_network_dialog_title">Đang đo kết nối</string>
+    <string name="settings_playback_measure_network_dialog_description">Đang kiểm tra tốc độ kết nối với nhiều kết nối song song. Quá trình này có thể mất vài giây.</string>
+    <string name="settings_playback_measure_network_in_progress">Đang kiểm tra…</string>
+
 </resources>

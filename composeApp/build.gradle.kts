@@ -474,6 +474,7 @@ kotlin {
                 if (androidDistribution == "full") {
                     implementation(files("libs/quickjs-kt-android-1.0.5-nuvio.aar"))
                     implementation(libs.ksoup)
+                    implementation(project(":vieneu"))
                 }
             }
         }

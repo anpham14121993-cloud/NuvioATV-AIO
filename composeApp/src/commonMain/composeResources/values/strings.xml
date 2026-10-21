@@ -570,6 +570,9 @@
     <string name="settings_advanced_clear_cw_cache">Clear Continue Watching Cache</string>
     <string name="settings_advanced_clear_cw_cache_subtitle">Remove cached Continue Watching data and refresh watch progress</string>
     <string name="settings_advanced_clear_cw_cache_done">Cache cleared</string>
+    <string name="settings_advanced_section_updates">UPDATES</string>
+    <string name="settings_advanced_check_updates">Check for Updates</string>
+    <string name="settings_advanced_check_updates_subtitle">Check GitHub releases and install the newest build</string>
     <string name="settings_licenses_attributions_section_app">APP LICENSE</string>
     <string name="settings_licenses_attributions_section_data">DATA &amp; SERVICES</string>
     <string name="settings_licenses_attributions_section_playback">PLAYBACK LICENSE</string>
@@ -1184,6 +1187,12 @@
     <string name="settings_playback_subtitle_outline_description">Draw a border around subtitle text.</string>
     <string name="settings_playback_subtitle_show_preferred_only">Show Only Preferred Languages</string>
     <string name="settings_playback_subtitle_show_preferred_only_description">Only show subtitles matching your preferred subtitle languages.</string>
+    <string name="settings_playback_tts_narration">Vietnamese voice narration</string>
+    <string name="settings_playback_tts_narration_description">Read Vietnamese subtitles aloud while lowering movie volume. Runs fully offline with the bundled model; no network needed.</string>
+    <string name="settings_playback_tts_narration_volume">Narration voice volume</string>
+    <string name="settings_playback_tts_narration_voice">Narration voice</string>
+    <string name="settings_playback_tts_narration_voice_female">Female (Hoai My)</string>
+    <string name="settings_playback_tts_narration_voice_male">Male (Nam Minh)</string>
     <string name="settings_playback_subtitle_size">Subtitle Size</string>
     <string name="settings_playback_subtitle_strip_sdh">Strip SDH Subtitles</string>
     <string name="settings_playback_subtitle_strip_sdh_description">Hide sound descriptions and speaker labels from text subtitles.</string>
@@ -1246,6 +1255,24 @@
     <string name="settings_playback_vod_cache_size">VOD Cache Size</string>
     <string name="settings_playback_vod_cache_size_value">%1$d MB</string>
     <string name="settings_playback_vod_cache_warning">Disk writes continue while a cached stream plays. A new size applies the next time the app starts.</string>
+
+    <string name="settings_playback_parallel_connections">Parallel Connections</string>
+    <string name="settings_playback_parallel_connections_description">Number of simultaneous network connections for streaming. Higher values may improve speed on fast networks but can cause issues on slower connections or with some servers.</string>
+    <string name="settings_playback_parallel_connections_dialog">Parallel Connections</string>
+    <string name="settings_playback_parallel_connections_value">%1$d connections</string>
+    <string name="settings_playback_chunk_size">Chunk Size</string>
+    <string name="settings_playback_chunk_size_description">Size of each data chunk read from the network. Smaller values start playback faster and seek more accurately; larger values reduce HTTP requests.</string>
+    <string name="settings_playback_chunk_size_value">%1$d MB</string>
+    <string name="settings_playback_chunk_count">Chunk Count</string>
+    <string name="settings_playback_chunk_count_description">Number of chunks per segment for adaptive streams (HLS/DASH).</string>
+    <string name="settings_playback_chunk_count_value">%1$d chunks</string>
+
+    <string name="settings_playback_measure_network">Measure Network</string>
+    <string name="settings_playback_measure_network_description">Run a throughput test to determine optimal parallel connection settings for your current network.</string>
+    <string name="settings_playback_measure_network_dialog_title">Measuring Network</string>
+    <string name="settings_playback_measure_network_dialog_description">Testing connection speed with multiple parallel connections. This may take a few seconds.</string>
+    <string name="settings_playback_measure_network_in_progress">Test in progress…</string>
+
     <string name="settings_tmdb_api_key_label">API key</string>
     <string name="settings_tmdb_api_key_override_description">Use your own TMDB API key, or leave blank to use the default.</string>
     <string name="settings_tmdb_personal_api_key">Personal API key</string>

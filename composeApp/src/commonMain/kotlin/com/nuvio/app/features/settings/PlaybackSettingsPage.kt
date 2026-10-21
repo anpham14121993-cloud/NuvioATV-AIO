@@ -1,6 +1,11 @@
 package com.nuvio.app.features.settings
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.features.player.LastProbeStreamStore
+import com.nuvio.app.features.player.NetworkProbe
+import com.nuvio.app.features.player.ProbeOutcome
+import com.nuvio.app.features.player.ProbeProgress
+import com.nuvio.app.features.player.ThroughputAdvice
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +29,7 @@ import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogButtonStyle
 import com.nuvio.app.core.ui.DialogOption
 import com.nuvio.app.core.ui.DialogSurface
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -71,6 +77,7 @@ import com.nuvio.app.features.player.localizedLabel
 import com.nuvio.app.features.player.IosTargetPrimaries
 import com.nuvio.app.features.player.IosTargetTransfer
 import com.nuvio.app.features.player.PlayerSettingsRepository
+import com.nuvio.app.features.player.TtsNarrationVoice
 import com.nuvio.app.features.player.STREAM_AUTO_PLAY_TIMEOUT_VALUES
 import com.nuvio.app.features.player.SubtitleBackgroundColorSwatches
 import com.nuvio.app.features.player.SubtitleColorSwatches
@@ -91,6 +98,8 @@ import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.streams.StreamAutoPlaySource
 import com.nuvio.app.isIos
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.StringResource
@@ -343,6 +352,7 @@ private fun PlaybackSettingsSection(
     var showPlaybackEngineDialog by remember { mutableStateOf(false) }
     var showLibmpvVideoOutputDialog by remember { mutableStateOf(false) }
     var showDecoderPriorityDialog by remember { mutableStateOf(false) }
+    var showParallelConnectionsDialog by remember { mutableStateOf(false) }
     var showHoldToSpeedValueDialog by remember { mutableStateOf(false) }
     var showIosAudioOutputDialog by remember { mutableStateOf(false) }
     var showIosHardwareDecoderDialog by remember { mutableStateOf(false) }
@@ -366,9 +376,52 @@ private fun PlaybackSettingsSection(
         P2pSettingsRepository.uiState
     }.collectAsStateWithLifecycle()
     val p2pCacheState by P2pStreamingEngine.cacheState.collectAsStateWithLifecycle()
-    val p2pStreamingState by P2pStreamingEngine.state.collectAsStateWithLifecycle()
+val p2pStreamingState by P2pStreamingEngine.state.collectAsStateWithLifecycle()
     val coroutineScope = rememberCoroutineScope()
+    var showMeasureNetworkDialog by remember { mutableStateOf(false) }
+    var showChunkSizeDialog by remember { mutableStateOf(false) }
+    var showChunkCountDialog by remember { mutableStateOf(false) }
+    var showTtsVoiceDialog by remember { mutableStateOf(false) }
+    var probeProgress by remember { mutableStateOf(ProbeProgress()) }
+    var probeOutcome by remember { mutableStateOf<ProbeOutcome?>(null) }
     val availableExternalPlayers = ExternalPlayerPlatform.availablePlayers()
+
+    val measureNetwork = {
+        showMeasureNetworkDialog = true
+        probeProgress = ProbeProgress()
+        probeOutcome = null
+        coroutineScope.launch(Dispatchers.Default) {
+            val target = LastProbeStreamStore.target()
+            if (target == null) {
+                probeOutcome = ProbeOutcome(
+                    baseline = null,
+                    parallelRows = emptyList(),
+                    advice = ThroughputAdvice.Result(
+                        advice = ThroughputAdvice.Advice.UNKNOWN,
+                        bestChunkMb = 0,
+                        suggestedConnections = ThroughputAdvice.SUGGESTED_CONNECTIONS,
+                        message = "Chưa có luồng nào để đo. Hãy phát một video trước.",
+                    ),
+                )
+                return@launch
+            }
+            val outcome = NetworkProbe.measure(target) { progress ->
+                probeProgress = progress
+            }
+            probeOutcome = outcome
+            when (outcome.advice.advice) {
+                ThroughputAdvice.Advice.TURN_ON_PARALLEL -> {
+                    PlayerSettingsRepository.setParallelConnections(outcome.advice.suggestedConnections)
+                    PlayerSettingsRepository.setChunkSizeMb(outcome.advice.bestChunkMb)
+                }
+                ThroughputAdvice.Advice.KEEP_SINGLE_CONNECTION -> {
+                    PlayerSettingsRepository.setParallelConnections(1)
+                }
+                else -> {}
+            }
+        }
+    }
+
     val selectedExternalPlayer = availableExternalPlayers.firstOrNull {
         it.id == autoPlayPlayerSettings.externalPlayerId
     }
@@ -598,6 +651,37 @@ private fun PlaybackSettingsSection(
                             autoPlayPlayerSettings.subtitleStyle.copy(showOnlyPreferredLanguages = enabled),
                         )
                     },
+                )
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsSwitchRow(
+                    title = stringResource(Res.string.settings_playback_tts_narration),
+                    description = stringResource(Res.string.settings_playback_tts_narration_description),
+                    checked = autoPlayPlayerSettings.ttsNarrationEnabled,
+                    enabled = otherSubtitleOptionsEnabled,
+                    isTablet = isTablet,
+                    onCheckedChange = PlayerSettingsRepository::setTtsNarrationEnabled,
+                )
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsSliderRow(
+                    title = stringResource(Res.string.settings_playback_tts_narration_volume),
+                    value = autoPlayPlayerSettings.ttsNarrationVolume,
+                    valueText = { volume -> "$volume%" },
+                    valueRange = 0..100,
+                    step = 5,
+                    isTablet = isTablet,
+                    enabled = otherSubtitleOptionsEnabled && autoPlayPlayerSettings.ttsNarrationEnabled,
+                    onValueChange = PlayerSettingsRepository::setTtsNarrationVolume,
+                )
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsNavigationRow(
+                    title = stringResource(Res.string.settings_playback_tts_narration_voice),
+                    description = when (autoPlayPlayerSettings.ttsNarrationVoice) {
+                        TtsNarrationVoice.Female -> stringResource(Res.string.settings_playback_tts_narration_voice_female)
+                        TtsNarrationVoice.Male -> stringResource(Res.string.settings_playback_tts_narration_voice_male)
+                    },
+                    enabled = otherSubtitleOptionsEnabled && autoPlayPlayerSettings.ttsNarrationEnabled,
+                    isTablet = isTablet,
+                    onClick = { showTtsVoiceDialog = true },
                 )
             }
         }
@@ -1038,6 +1122,38 @@ private fun PlaybackSettingsSection(
                             modifier = Modifier.padding(horizontal = if (isTablet) 20.dp else 16.dp, vertical = 4.dp),
                         )
                     }
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.settings_playback_parallel_connections),
+                        description = stringResource(Res.string.settings_playback_parallel_connections_description),
+                        isTablet = isTablet,
+                        enabled = exoOptionsEnabled,
+                        onClick = { showParallelConnectionsDialog = true },
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.settings_playback_chunk_size),
+                        description = stringResource(Res.string.settings_playback_chunk_size_description),
+                        isTablet = isTablet,
+                        enabled = exoOptionsEnabled,
+                        onClick = { showChunkSizeDialog = true },
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.settings_playback_chunk_count),
+                        description = stringResource(Res.string.settings_playback_chunk_count_description),
+                        isTablet = isTablet,
+                        enabled = exoOptionsEnabled,
+                        onClick = { showChunkCountDialog = true },
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.settings_playback_measure_network),
+                        description = stringResource(Res.string.settings_playback_measure_network_description),
+                        isTablet = isTablet,
+                        enabled = exoOptionsEnabled,
+                        onClick = { measureNetwork() },
+                    )
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsSwitchRow(
                         title = stringResource(Res.string.settings_playback_buffer_custom),
@@ -1764,6 +1880,58 @@ private fun PlaybackSettingsSection(
                 showDecoderPriorityDialog = false
             },
             onDismiss = { showDecoderPriorityDialog = false },
+        )
+    }
+
+    if (showParallelConnectionsDialog) {
+        ParallelConnectionsDialog(
+            selectedConnections = autoPlayPlayerSettings.parallelConnections,
+            onConnectionsSelected = { connections ->
+                PlayerSettingsRepository.setParallelConnections(connections)
+                showParallelConnectionsDialog = false
+            },
+            onDismiss = { showParallelConnectionsDialog = false },
+        )
+    }
+
+    if (showChunkSizeDialog) {
+        ChunkSizeDialog(
+            selectedChunkSizeMb = autoPlayPlayerSettings.chunkSizeMb,
+            onChunkSizeSelected = { sizeMb ->
+                PlayerSettingsRepository.setChunkSizeMb(sizeMb)
+                showChunkSizeDialog = false
+            },
+            onDismiss = { showChunkSizeDialog = false },
+        )
+    }
+
+    if (showTtsVoiceDialog) {
+        TtsVoiceDialog(
+            selectedVoice = autoPlayPlayerSettings.ttsNarrationVoice,
+            onVoiceSelected = { voice ->
+                PlayerSettingsRepository.setTtsNarrationVoice(voice, "dialog")
+                showTtsVoiceDialog = false
+            },
+            onDismiss = { showTtsVoiceDialog = false },
+        )
+    }
+
+    if (showChunkCountDialog) {
+        ChunkCountDialog(
+            selectedChunkCount = autoPlayPlayerSettings.chunkCount,
+            onChunkCountSelected = { count ->
+                PlayerSettingsRepository.setChunkCount(count)
+                showChunkCountDialog = false
+            },
+            onDismiss = { showChunkCountDialog = false },
+        )
+    }
+
+    if (showMeasureNetworkDialog) {
+        MeasureNetworkDialog(
+            progress = probeProgress,
+            outcome = probeOutcome,
+            onDismiss = { showMeasureNetworkDialog = false },
         )
     }
 
@@ -2864,6 +3032,194 @@ private fun NextEpisodeThresholdModeDialog(
             )
         }
 
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_done),
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ParallelConnectionsDialog(
+    selectedConnections: Int,
+    onConnectionsSelected: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.settings_playback_parallel_connections_dialog),
+    ) {
+        Column {
+            listOf(1, 2, 3, 4, 5, 6, 7, 8).forEach { connections ->
+                val isSelected = connections == selectedConnections
+                DialogOption(
+                    text = stringResource(Res.string.settings_playback_parallel_connections_value, connections),
+                    selected = isSelected,
+                    onClick = { onConnectionsSelected(connections) },
+                )
+            }
+        }
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_done),
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeasureNetworkDialog(
+    progress: ProbeProgress,
+    outcome: ProbeOutcome?,
+    onDismiss: () -> Unit,
+) {
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.settings_playback_measure_network_dialog_title),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (outcome == null) {
+                Text(
+                    text = stringResource(Res.string.settings_playback_measure_network_dialog_description),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                CircularProgressIndicator()
+                progress.baseline?.let { baseline ->
+                    Text(
+                        text = "1 kết nối: ${ThroughputAdvice.fmt(baseline.megabitsPerSecond)} Mbps",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                progress.parallelRows.forEach { row ->
+                    Text(
+                        text = "Song song ${row.chunkMb} MB: ${ThroughputAdvice.fmt(row.megabitsPerSecond)} Mbps",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = stringResource(Res.string.settings_playback_measure_network_in_progress),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    text = outcome.advice.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                outcome.baseline?.let { baseline ->
+                    Text(
+                        text = "1 kết nối: ${ThroughputAdvice.fmt(baseline.megabitsPerSecond)} Mbps",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                outcome.parallelRows.forEach { row ->
+                    Text(
+                        text = "Song song ${row.chunkMb} MB: ${ThroughputAdvice.fmt(row.megabitsPerSecond)} Mbps",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_done),
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChunkSizeDialog(
+    selectedChunkSizeMb: Int,
+    onChunkSizeSelected: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.settings_playback_chunk_size),
+    ) {
+        Column {
+            listOf(1, 2, 4, 8, 16).forEach { sizeMb ->
+                val isSelected = sizeMb == selectedChunkSizeMb
+                DialogOption(
+                    text = stringResource(Res.string.settings_playback_chunk_size_value, sizeMb),
+                    selected = isSelected,
+                    onClick = { onChunkSizeSelected(sizeMb) },
+                )
+            }
+        }
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_done),
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChunkCountDialog(
+    selectedChunkCount: Int,
+    onChunkCountSelected: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.settings_playback_chunk_count),
+    ) {
+        Column {
+            listOf(1, 2, 4, 8, 16).forEach { count ->
+                val isSelected = count == selectedChunkCount
+                DialogOption(
+                    text = stringResource(Res.string.settings_playback_chunk_count_value, count),
+                    selected = isSelected,
+                    onClick = { onChunkCountSelected(count) },
+                )
+            }
+        }
+        DialogButtons {
+            DialogButton(
+                text = stringResource(Res.string.action_done),
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TtsVoiceDialog(
+    selectedVoice: TtsNarrationVoice,
+    onVoiceSelected: (TtsNarrationVoice) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DialogSurface(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.settings_playback_tts_narration_voice),
+    ) {
+        Column {
+            val options = listOf(
+                TtsNarrationVoice.Female to Res.string.settings_playback_tts_narration_voice_female,
+                TtsNarrationVoice.Male to Res.string.settings_playback_tts_narration_voice_male,
+            )
+            options.forEach { (voice, label) ->
+                DialogOption(
+                    text = stringResource(label),
+                    selected = voice == selectedVoice,
+                    onClick = { onVoiceSelected(voice) },
+                )
+            }
+        }
         DialogButtons {
             DialogButton(
                 text = stringResource(Res.string.action_done),

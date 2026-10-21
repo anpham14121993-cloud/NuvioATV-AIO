@@ -106,6 +106,9 @@ actual object PlayerSettingsStorage {
     private const val iosContrastKey = "ios_contrast"
     private const val iosSaturationKey = "ios_saturation"
     private const val iosGammaKey = "ios_gamma"
+    private const val parallelConnectionsKey = "parallel_connections"
+    private const val chunkSizeMbKey = "chunk_size_mb"
+    private const val chunkCountKey = "chunk_count"
     private val syncKeys = listOf(
         showLoadingOverlayKey,
         showPlayerLoadingStatusKey,
@@ -180,6 +183,9 @@ actual object PlayerSettingsStorage {
         iosContrastKey,
         iosSaturationKey,
         iosGammaKey,
+        parallelConnectionsKey,
+        chunkSizeMbKey,
+        chunkCountKey,
     )
 
     actual fun loadPendingExternalPlayback(): String? = NSUserDefaults.standardUserDefaults.stringForKey(pendingExternalPlaybackKey)
@@ -1079,6 +1085,24 @@ actual object PlayerSettingsStorage {
         saveInt(iosGammaKey, value)
     }
 
+    actual fun loadParallelConnections(): Int? = loadInt(parallelConnectionsKey)
+
+    actual fun saveParallelConnections(connections: Int) {
+        saveInt(parallelConnectionsKey, connections)
+    }
+
+    actual fun loadChunkSizeMb(): Int? = loadInt(chunkSizeMbKey)
+
+    actual fun saveChunkSizeMb(sizeMb: Int) {
+        saveInt(chunkSizeMbKey, sizeMb)
+    }
+
+    actual fun loadChunkCount(): Int? = loadInt(chunkCountKey)
+
+    actual fun saveChunkCount(count: Int) {
+        saveInt(chunkCountKey, count)
+    }
+
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadShowLoadingOverlay()?.let { put(showLoadingOverlayKey, encodeSyncBoolean(it)) }
         loadShowPlayerLoadingStatus()?.let { put(showPlayerLoadingStatusKey, encodeSyncBoolean(it)) }
@@ -1154,6 +1178,9 @@ actual object PlayerSettingsStorage {
         loadIosContrast()?.let { put(iosContrastKey, encodeSyncInt(it)) }
         loadIosSaturation()?.let { put(iosSaturationKey, encodeSyncInt(it)) }
         loadIosGamma()?.let { put(iosGammaKey, encodeSyncInt(it)) }
+        loadParallelConnections()?.let { put(parallelConnectionsKey, encodeSyncInt(it)) }
+        loadChunkSizeMb()?.let { put(chunkSizeMbKey, encodeSyncInt(it)) }
+        loadChunkCount()?.let { put(chunkCountKey, encodeSyncInt(it)) }
     }
 
     actual fun replaceFromSyncPayload(payload: JsonObject) {
@@ -1235,5 +1262,8 @@ actual object PlayerSettingsStorage {
         payload.decodeSyncInt(iosContrastKey)?.let(::saveIosContrast)
         payload.decodeSyncInt(iosSaturationKey)?.let(::saveIosSaturation)
         payload.decodeSyncInt(iosGammaKey)?.let(::saveIosGamma)
+        payload.decodeSyncInt(parallelConnectionsKey)?.let(::saveParallelConnections)
+        payload.decodeSyncInt(chunkSizeMbKey)?.let(::saveChunkSizeMb)
+        payload.decodeSyncInt(chunkCountKey)?.let(::saveChunkCount)
     }
 }

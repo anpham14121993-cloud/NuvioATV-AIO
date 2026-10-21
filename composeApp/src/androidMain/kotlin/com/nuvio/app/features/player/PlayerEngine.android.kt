@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.util.AttributeSet
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -115,10 +116,8 @@ actual fun PlatformPlayerSurface(
     onSnapshot: (PlayerPlaybackSnapshot) -> Unit,
     onError: (String?) -> Unit,
 ) {
-    val playerSettings = remember {
-        PlayerSettingsRepository.ensureLoaded()
-        PlayerSettingsRepository.uiState.value
-    }
+    val playerSettings by PlayerSettingsRepository.uiState.collectAsStateWithLifecycle()
+    remember { PlayerSettingsRepository.ensureLoaded() }
     val normalizedStreamType = normalizeStreamType(streamType)
     val isDirectMatroska = normalizedStreamType.isMatroskaStreamType() || isMatroskaSourceUrl(sourceUrl)
     val playerSourceKey = listOf(
@@ -263,10 +262,9 @@ private fun ExoPlayerSurface(
     val latestPlayWhenReady = rememberUpdatedState(playWhenReady)
     val coroutineScope = rememberCoroutineScope()
 
-    val playerSettings = remember {
-        PlayerSettingsRepository.ensureLoaded()
-        PlayerSettingsRepository.uiState.value
-    }
+    val playerSettings by PlayerSettingsRepository.uiState.collectAsStateWithLifecycle()
+    val latestHideSubtitles = rememberUpdatedState(playerSettings.ttsNarrationEnabled)
+    remember { PlayerSettingsRepository.ensureLoaded() }
 
     val sanitizedSourceHeaders = remember(sourceHeaders) {
         sanitizePlaybackHeaders(sourceHeaders)
@@ -344,9 +342,13 @@ private fun ExoPlayerSurface(
         playerSettings.vodCacheEnabled,
         playerSettings.vodCacheSizeMode,
         playerSettings.vodCacheSizeMb,
+        playerSettings.parallelConnections,
+        playerSettings.chunkSizeMb,
+        playerSettings.chunkCount,
     ) {
         val upstream = PlatformPlaybackDataSourceFactory.create(
             context = context,
+            sourceUrl = sourceUrl,
             defaultRequestHeaders = sanitizedSourceHeaders,
             defaultResponseHeaders = sanitizedSourceResponseHeaders,
             useYoutubeChunkedPlayback = useYoutubeChunkedPlayback,
@@ -580,6 +582,76 @@ private fun ExoPlayerSurface(
         Log.d(TAG, "$reason: preserving audio track index=${selection.index} id=${selection.id}")
     }
 
+    val ttsNarration = remember(exoPlayer) {
+        TtsNarrationController(context.applicationContext, exoPlayer)
+    }
+    sidecarController.onActiveCues = { cues, windowSec, fullWindowSec ->
+        runCatching {
+            val forcedVi = ttsNarration.looksLikeVietnameseUrl(sidecarController.activeSidecarSubtitleKey)
+            ttsNarration.onSidecarCues(cues, windowSec, fullWindowSec, forcedVi)
+        }
+    }
+    sidecarController.onUpcomingCues = { items ->
+        runCatching {
+            val forcedVi = ttsNarration.looksLikeVietnameseUrl(sidecarController.activeSidecarSubtitleKey)
+            ttsNarration.prefetchUpcoming(items, forcedVi)
+        }
+    }
+
+    var ttsPrefsHydrated by remember { mutableStateOf(false) }
+    LaunchedEffect(ttsNarration) {
+        // NOTE: ttsPersistHook is installed once in NuvioApplication.onCreate so
+        // settings changed anywhere (player or settings screen) persist immediately.
+        // Hydrate once per process: apply persisted values only when the user
+        // hasn't touched TTS settings yet, so choices made in the settings
+        // screen are never clobbered.
+        runCatching {
+            PlayerSettingsRepository.ensureLoaded()
+            if (!PlayerSettingsRepository.ttsTouchedByUser) {
+                TtsNarrationPrefs.load(context)?.let { persisted ->
+                    if (persisted != PlayerSettingsRepository.uiState.value.ttsNarrationEnabled) {
+                        PlayerSettingsRepository.setTtsNarrationEnabled(persisted)
+                    }
+                }
+                TtsNarrationPrefs.loadVolume(context)?.let { persistedVolume ->
+                    if (persistedVolume != PlayerSettingsRepository.uiState.value.ttsNarrationVolume) {
+                        PlayerSettingsRepository.setTtsNarrationVolume(persistedVolume)
+                    }
+                }
+                TtsNarrationPrefs.loadVoice(context)?.let { persistedVoice ->
+                    if (persistedVoice != PlayerSettingsRepository.uiState.value.ttsNarrationVoice) {
+                        PlayerSettingsRepository.setTtsNarrationVoice(persistedVoice, "engine-hydration")
+                    }
+                }
+                TtsNarrationPrefs.loadDuckVolume(context)?.let { persistedDuck ->
+                    if (persistedDuck != PlayerSettingsRepository.uiState.value.ttsDuckVolume) {
+                        PlayerSettingsRepository.setTtsDuckVolume(persistedDuck)
+                    }
+                }
+            }
+            ttsNarration.start()
+        }
+        ttsPrefsHydrated = true
+    }
+    // (No TTS test-speak button anymore.)
+    LaunchedEffect(
+        ttsNarration,
+        playerSettings.ttsNarrationEnabled,
+        playerSettings.ttsNarrationVolume,
+        playerSettings.ttsNarrationVoice,
+        playerSettings.ttsDuckVolume,
+    ) {
+        // Wait for hydration so persisted values are never clobbered by defaults.
+        if (!ttsPrefsHydrated) return@LaunchedEffect
+        runCatching {
+            // Persistence itself happens via ttsPersistHook inside the setters.
+            ttsNarration.setEnabled(playerSettings.ttsNarrationEnabled)
+            ttsNarration.setVolumePercent(playerSettings.ttsNarrationVolume)
+            ttsNarration.setNarrationVoice(playerSettings.ttsNarrationVoice)
+            ttsNarration.setDuckLevelPercent(playerSettings.ttsDuckVolume)
+        }
+    }
+
     DisposableEffect(exoPlayer) {
         PlayerPictureInPictureManager.registerPausePlaybackCallback {
             exoPlayer.pause()
@@ -715,9 +787,20 @@ private fun ExoPlayerSurface(
                 }
             }
 
+            override fun onCues(cues: List<Cue>) {
+                // Sidecar (external subs) feeds TTS separately; avoid double narration.
+                if (!sidecarController.isSidecarActive()) {
+                    runCatching { ttsNarration.onCues(cues) }
+                }
+                playerViewRef?.applyNarrationSubtitleVisibility(latestHideSubtitles.value)
+            }
+
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 Log.d(TAG, "onTracksChanged: ${tracks.groups.size} groups total")
                 exoPlayer.logCurrentTracks("onTracksChanged")
+                ttsNarration.setActiveSubtitleIsVietnamese(
+                    TtsNarrationController.isSelectedSubtitleVietnamese(exoPlayer),
+                )
                 pendingAudioTrackSelection.firstOrNull()?.let { selection ->
                     if (tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }) {
                         pendingAudioTrackSelection.clear()
@@ -745,7 +828,11 @@ private fun ExoPlayerSurface(
             PlayerPictureInPictureManager.registerPausePlaybackCallback(null)
             PlayerPictureInPictureManager.registerTogglePlaybackCallback(null)
             exoPlayer.removeListener(listener)
+            sidecarController.onActiveCues = null
+            sidecarController.onUpcomingCues = null
+            ttsNarration.release()
             playerViewRef?.keepScreenOn = false
+            playerViewRef = null
             subtitleSelectionJob?.cancel()
             sidecarController.stopSidecarAddonSubtitle(clearView = true)
         }
@@ -925,6 +1012,18 @@ private fun ExoPlayerSurface(
                                 .build()
                             return
                         }
+                    } else if (sidecarController.supportsTimingFor(url)) {
+                        // e.g. .ass with libass enabled: Media3/libass renders the
+                        // subtitle, but we still run a TTS-only sidecar so narration
+                        // gets real per-cue timestamps (enables prefetch + sync).
+                        val headers = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
+                        sidecarController.startSidecarAddonSubtitle(
+                            url = url,
+                            headers = headers,
+                            useLibass = useLibass,
+                            ttsOnly = true,
+                        )
+                        Log.d(TAG, "setSubtitleUri: TTS-only sidecar for url=$url")
                     }
                     subtitleSelectionJob = coroutineScope.launch {
                         val currentPosition = exoPlayer.currentPosition
@@ -1059,6 +1158,7 @@ private fun ExoPlayerSurface(
                 setShutterBackgroundColor(android.graphics.Color.BLACK)
                 playerViewRef = this
                 sidecarController.bindSubtitleView(this.subtitleView)
+                applyNarrationSubtitleVisibility(latestHideSubtitles.value)
                 syncLibassOverlay(
                     player = exoPlayer,
                     enabled = useLibass,
@@ -1073,6 +1173,7 @@ private fun ExoPlayerSurface(
             playerView.resizeMode = resizeMode.toExoResizeMode()
             playerViewRef = playerView
             sidecarController.bindSubtitleView(playerView.subtitleView)
+            playerView.applyNarrationSubtitleVisibility(latestHideSubtitles.value)
             syncPlayerViewKeepScreenOn()
             playerView.syncLibassOverlay(
                 player = exoPlayer,
@@ -2002,6 +2103,14 @@ private fun PlayerResizeMode.toExoResizeMode(): Int =
         PlayerResizeMode.Fill -> AspectRatioFrameLayout.RESIZE_MODE_FILL
         PlayerResizeMode.Zoom -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
     }
+
+/** Hides every subtitle surface (media3 + libass overlay) while narration is on. */
+private fun PlayerView.applyNarrationSubtitleVisibility(hidden: Boolean) {
+    val visibility = if (hidden) android.view.View.GONE else android.view.View.VISIBLE
+    subtitleView?.visibility = visibility
+    findViewById<android.widget.FrameLayout>(R.id.libass_overlay_container)?.visibility = visibility
+    findViewById<android.widget.FrameLayout>(R.id.libass_overlay_container_gl)?.visibility = visibility
+}
 
 private fun PlayerView.syncLibassOverlay(
     player: ExoPlayer,
