@@ -161,9 +161,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platforms;android-35
-            build-tools;35.0.0
+          packages: 'platforms;android-35 build-tools;35.0.0'
 
       - name: Download bundled TTS models
         run: |
@@ -198,6 +196,9 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
       - name: Build full release APKs
         run: ./gradlew :androidApp:assembleFullRelease -Pnuvio.android.distribution=full -Pnuvio.app.versionName="${RELEASE_VERSION}" --stacktrace
