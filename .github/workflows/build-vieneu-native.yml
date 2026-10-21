@@ -38,6 +38,17 @@ jobs:
           git clone "${SEA_G2P_REPO}" "${RUNNER_TEMP}/sea-g2p"
           git -C "${RUNNER_TEMP}/sea-g2p" checkout "${SEA_G2P_COMMIT}"
 
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${RUNNER_TEMP}/sea-g2p/target
+          key: rust-android-${{ hashFiles('/dev/null') }}-${{ env.SEA_G2P_COMMIT }}
+          restore-keys: |
+            rust-android-
+
       - name: Build sea_g2p_rs for both ABIs
         run: |
           cd "${RUNNER_TEMP}/sea-g2p"
@@ -52,10 +63,13 @@ jobs:
           cc="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           for abi in arm64-v8a armeabi-v7a; do
             page_size=4096
+            target="armv7a-linux-androideabi24"
             if [[ "${abi}" == "arm64-v8a" ]]; then
               page_size=16384
+              target="aarch64-linux-android24"
             fi
-            "${cc}/${abi}-clang" \
+            "${cc}/clang" \
+              --target="${target}" \
               -shared -fPIC -O2 \
               "-Wl,-z,max-page-size=${page_size}" \
               -o "libg2pjni-${abi}.so" \
@@ -68,8 +82,8 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p dist/arm64-v8a dist/armeabi-v7a
-          cp "${RUNNER_TEMP}/sea-g2p/target/android/arm64-v8a/libsea_g2p_rs.so" dist/arm64-v8a/
-          cp "${RUNNER_TEMP}/sea-g2p/target/android/armeabi-v7a/libsea_g2p_rs.so" dist/armeabi-v7a/
+          cp "${RUNNER_TEMP}/sea-g2p/target/aarch64-linux-android/release/libsea_g2p_rs.so" dist/arm64-v8a/
+          cp "${RUNNER_TEMP}/sea-g2p/target/armv7-linux-androideabi/release/libsea_g2p_rs.so" dist/armeabi-v7a/
           cp libg2pjni-arm64-v8a.so dist/arm64-v8a/libg2pjni.so
           cp libg2pjni-armeabi-v7a.so dist/armeabi-v7a/libg2pjni.so
           file dist/*/*.so || true
