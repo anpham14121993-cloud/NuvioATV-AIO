@@ -149,7 +149,11 @@ android {
 
 androidComponents {
     onVariants { variant ->
-        variant.applicationId.set("com.nuviodebug.com")
+        // The TV build ships as a separate app so it can be installed next to
+        // the arm64 phone build.
+        variant.applicationId.set(
+            if (variant.flavorName == "tv") "com.nuviodebug.tv" else "com.nuviodebug.com",
+        )
     }
 }
 

@@ -11,6 +11,7 @@ android {
         minSdk = 24
         ndk {
             abiFilters += "arm64-v8a"
+            abiFilters += "armeabi-v7a"
         }
         consumerProguardFiles("consumer-rules.pro")
     }
