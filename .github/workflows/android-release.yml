@@ -158,12 +158,11 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Install Android SDK platform
-        run: |
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-37" \
-            "build-tools;37.0.0" \
-            "platform-tools" >/dev/null
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 37
+          build-tools: 37.0.0
 
       - name: Download bundled TTS models
         run: |
