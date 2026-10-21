@@ -336,7 +336,6 @@ tasks.withType<KotlinCompilationTask<*>>().configureEach {
     dependsOn(generateRuntimeConfigs)
 }
 
-val buildIos = providers.gradleProperty("buildIos").map(String::toBooleanStrict).getOrElse(false)
 
 kotlin {
     android {
@@ -355,14 +354,7 @@ kotlin {
         }
     }
     
-    val iosTargets = if (buildIos) {
-        listOf(
-            iosArm64(),
-            iosSimulatorArm64()
-        )
-    } else {
-        emptyList()
-    }
+    val iosTargets = emptyList<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget>()
 
     iosTargets.forEach { iosTarget ->
         val nuvioEngineSlice = if (iosTarget.name == "iosArm64") {
@@ -535,11 +527,7 @@ kotlin {
     }
 }
 
-configurations.matching { it.name == "iosMainImplementation" }.configureEach {
-    if (buildIos) {
-        project.dependencies.add(name, libs.ktor.client.darwin)
-    }
-}
+
 
 configurations.all {
     exclude(group = "androidx.media3", module = "media3-exoplayer")
