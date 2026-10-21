@@ -2,6 +2,7 @@ package com.nuvio.app.features.player
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -328,9 +329,13 @@ class VieneuNarrationEngine(
             val maxMb = runtime.maxMemory() / (1024 * 1024)
             val availMb = (mi?.availMem ?: 0L) / (1024 * 1024)
             val low = mi?.lowMemory ?: false
+            val flags = appContext.applicationInfo.flags
+            val largeHeap = (flags and ApplicationInfo.FLAG_LARGE_HEAP) != 0
+            val memoryClassMb = am?.memoryClass ?: 0
+            val largeMemoryClassMb = am?.largeMemoryClass ?: 0
             TtsTrace.log(
                 "$tag mem: heap=${usedMb}/${maxMb}MB avail=${availMb}MB lowRam=$low " +
-                    "largeHeap=${appContext.applicationInfo.largeHeap}",
+                    "largeHeap=$largeHeap memClass=${memoryClassMb}MB largeMemClass=${largeMemoryClassMb}MB",
             )
         } catch (t: Throwable) {
             TtsTrace.log("$tag mem: unavailable " + t.javaClass.simpleName)
