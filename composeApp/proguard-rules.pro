@@ -62,3 +62,17 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# ONNX Runtime (VieNeu offline TTS). The runtime JNI layer resolves these classes
+# and members by name; if R8 renames them the native side aborts the process
+# (hard SIGABRT with no Java stack trace).
+-keep class ai.onnxruntime.** { *; }
+-keep interface ai.onnxruntime.** { *; }
+-keep enum ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
+
+# VieNeu TTS engine plus the G2P JNI bridge (Java_com_nuvio_app_vieneu_G2P_*).
+-keep class com.nuvio.app.vieneu.** { *; }
+-keepclasseswithmembernames class com.nuvio.app.vieneu.* {
+    native <methods>;
+}
