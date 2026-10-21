@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import android.app.ActivityManager
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -318,6 +319,24 @@ class VieneuNarrationEngine(
         }
     }
 
+    private fun logMemory(tag: String) {
+        try {
+            val am = context.getSystemService(android.app.ActivityManager::class.java)
+            val mi = am?.let { ActivityManager.MemoryInfo() }?.also { am.getMemoryInfo(it) }
+            val runtime = Runtime.getRuntime()
+            val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+            val maxMb = runtime.maxMemory() / (1024 * 1024)
+            val availMb = (mi?.availMem ?: 0L) / (1024 * 1024)
+            val low = mi?.lowMemory ?: false
+            TtsTrace.log(
+                "$tag mem: heap=${usedMb}/${maxMb}MB avail=${availMb}MB lowRam=$low " +
+                    "largeHeap=${context.applicationInfo.largeHeap}",
+            )
+        } catch (t: Throwable) {
+            TtsTrace.log("$tag mem: unavailable " + t.javaClass.simpleName)
+        }
+    }
+
     /** Synthesizes PCM (or a cached copy) for [text] in the voice behind [api]. */
     private fun synth(e: VieneuEngine, text: String, api: String): FloatArray? {
         val name = voiceFor(api) ?: return null
@@ -338,11 +357,13 @@ class VieneuNarrationEngine(
             // on-demand calls can never corrupt each other's audio. Never touch the
             // engine after release() closed its native sessions.
             TtsTrace.log("synth: start len=" + text.length)
+            logMemory("synth: start")
             val wav = synchronized(synthLock) {
                 if (released) return null
                 e.synthesize(text, voice.emb, voice.codes, p)
             }
             TtsTrace.log("synth: ok samples=" + wav.size)
+            logMemory("synth: ok")
             synthOk.incrementAndGet()
             putCache(key, wav)
             writeDisk(name, text, wav)

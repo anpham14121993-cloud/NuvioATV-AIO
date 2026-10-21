@@ -75,6 +75,7 @@ open class MainActivity : AppCompatActivity() {
     private var pipRemoteActionReceiver: PipRemoteActionReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        com.nuvio.app.features.player.TtsTrace.log("main: onCreate")
         installSplashScreen()
         enableEdgeToEdge(
             navigationBarStyle = SystemBarStyle.dark(
@@ -146,6 +147,7 @@ open class MainActivity : AppCompatActivity() {
         EpisodeReleaseNotificationPlatform.bindActivity(this)
         handleIncomingAppIntent(intent)
 
+        com.nuvio.app.features.player.TtsTrace.log("main: setContent")
         setContent {
             App()
         }

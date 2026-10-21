@@ -645,6 +645,7 @@ private fun ExoPlayerSurface(
         if (!ttsPrefsHydrated) return@LaunchedEffect
         runCatching {
             // Persistence itself happens via ttsPersistHook inside the setters.
+            TtsTrace.log("player: narration setEnabled=" + playerSettings.ttsNarrationEnabled)
             ttsNarration.setEnabled(playerSettings.ttsNarrationEnabled)
             ttsNarration.setVolumePercent(playerSettings.ttsNarrationVolume)
             ttsNarration.setNarrationVoice(playerSettings.ttsNarrationVoice)

@@ -25,6 +25,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         installCrashLogger()
         com.nuvio.app.features.player.TtsTrace.init(this)
+        com.nuvio.app.features.player.TtsTrace.log("app: cpu=" + cpuFeatures())
         // Persist TTS narration settings immediately, from any screen. The shared
         // repository cannot touch platform storage, so Android installs this hook
         // once at startup (player open is NOT required).
@@ -91,6 +92,20 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
             }
             .build()
     }
+
+
+    /** CPU feature flags (e.g. asimddp) to spot unsupported dotprod instructions. */
+    private fun cpuFeatures(): String = runCatching {
+        val text = java.io.File("/proc/cpuinfo").readText()
+        val line = text.lineSequence().firstOrNull { it.startsWith("Features") || it.startsWith("flags") }
+        val flags = line?.substringAfter(':')?.trim().orEmpty().split(' ').filter { it.isNotBlank() }
+        val interesting = flags.filter {
+            it in setOf(
+                "asimd", "asimddp", "fphp", "sve", "sve2", "i8mm", "bf16", "atomics", "aes", "sha2",
+            )
+        }
+        "features=" + interesting.joinToString(",") + " abis=" + android.os.Build.SUPPORTED_ABIS.joinToString(",")
+    }.getOrElse { "unavailable" }
 
     /** Writes the Java stack trace to Downloads so crashes can be diagnosed on-device. */
     private fun installCrashLogger() {

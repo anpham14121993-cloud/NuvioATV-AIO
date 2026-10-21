@@ -222,83 +222,12 @@ jobs:
           path: release-apk/*.apk
           if-no-files-found: error
 
-  ios:
-    name: Build iOS IPA
-    if: inputs.mode != 'dry-run'
-    needs: prepare
-    runs-on: macos-26
-    timeout-minutes: 120
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      GRADLE_OPTS: -Dfile.encoding=UTF-8
-      KOTLIN_DAEMON_JVMARGS: -Xmx2048M
-      NUVIO_GRADLE_JVMARGS: -Xmx4608M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M
-      NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx4608M
-      RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-
-      - name: Cache Kotlin Native
-        uses: actions/cache@v5
-        with:
-          path: ~/.konan
-          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: |
-            konan-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Verify Apple toolchain
-        run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-
-      - name: Configure runtime properties
-        run: |
-          printf '%s' "${RELEASE_PROPERTIES_BASE64}" | base64 --decode > local.properties
-          sed -i '' -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
-
-      - name: Prepare iOS dependencies
-        run: ./scripts/prepare-ios-dependencies.sh
-
-      - name: Build unsigned full IPA
-        run: |
-          (
-            while sleep 60; do
-              echo "::group::Build resources $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-              uptime
-              vm_stat
-              ps -Ao pid,etime,%cpu,rss,command -r | head -n 12 || true
-              echo "::endgroup::"
-            done
-          ) &
-          monitor_pid=$!
-          trap 'kill "${monitor_pid}" 2>/dev/null || true' EXIT
-          ./scripts/build-ios-ipa.sh "${{ needs.prepare.outputs.version }}"
-
-      - name: Upload iOS artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: nuvio-${{ needs.prepare.outputs.version }}-ios-full-release
-          path: build/ios-ipa/*-full-release.ipa
-          if-no-files-found: error
-
   release:
     name: Create ${{ inputs.mode }} release
     if: inputs.mode != 'dry-run'
     needs:
       - prepare
       - android
-      - ios
     runs-on: ubuntu-latest
     permissions:
       contents: write
