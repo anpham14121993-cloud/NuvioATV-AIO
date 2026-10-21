@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.nuvio.app.vieneu"
-    compileSdk = 37
+    compileSdk = 36
     compileSdkMinor = 0
 
     defaultConfig {

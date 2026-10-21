@@ -1,0 +1,6 @@
+tree 26d54b2f8f499d0f4988ef72c3a0fb67720a31f8
+parent 8f2f7221c2f59c47341ef80b2982ad9c1b0b21cf
+author tapframe <85391825+tapframe@users.noreply.github.com> 1784666626 +0530
+committer tapframe <85391825+tapframe@users.noreply.github.com> 1784746601 +0530
+
+feat(simkl): centralize API policy
