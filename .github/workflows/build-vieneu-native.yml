@@ -84,8 +84,9 @@ jobs:
           mkdir -p dist/arm64-v8a dist/armeabi-v7a
           cp "${RUNNER_TEMP}/sea-g2p/target/aarch64-linux-android/release/libsea_g2p_rs.so" dist/arm64-v8a/
           cp "${RUNNER_TEMP}/sea-g2p/target/armv7-linux-androideabi/release/libsea_g2p_rs.so" dist/armeabi-v7a/
-          cp libg2pjni-arm64-v8a.so dist/arm64-v8a/libg2pjni.so
-          cp libg2pjni-armeabi-v7a.so dist/armeabi-v7a/libg2pjni.so
+          cpp="${GITHUB_WORKSPACE}/vieneu/src/main/cpp"
+          cp "${cpp}/libg2pjni-arm64-v8a.so" dist/arm64-v8a/libg2pjni.so
+          cp "${cpp}/libg2pjni-armeabi-v7a.so" dist/armeabi-v7a/libg2pjni.so
           file dist/*/*.so || true
           ls -lh dist/arm64-v8a dist/armeabi-v7a
 
