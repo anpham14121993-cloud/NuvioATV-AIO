@@ -234,7 +234,16 @@ val supabaseProps = Properties().apply {
     if (propsFile.exists()) propsFile.inputStream().use { load(it) }
 }
 val releaseAppVersionName = providers.gradleProperty("nuvio.app.versionName").orNull ?: "0.5.8"
-val releaseAppVersionCode = 140
+val releaseAppVersionCode = providers.gradleProperty("nuvio.app.versionCode").orNull?.toIntOrNull()
+    ?: run {
+        // Derive a stable, monotonically increasing code from the version name so
+        // that a release can always be installed over the previous one.
+        val parts = releaseAppVersionName.substringBefore('-').substringBefore('+').split('.')
+        val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+        val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+        major * 10000 + minor * 100 + patch
+    }
 val iosDistribution = (
     providers.gradleProperty("nuvio.ios.distribution").orNull
         ?: System.getenv("NUVIO_IOS_DISTRIBUTION")

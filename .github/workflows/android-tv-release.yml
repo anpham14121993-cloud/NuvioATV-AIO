@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version name for the TV build"
+        description: "Version name for the TV build (semver, e.g. 0.5.9)"
         required: false
-        default: "0.5.8-tv"
+        default: "0.5.9"
 
 jobs:
   native:
@@ -93,7 +93,7 @@ jobs:
             echo "No TV release APK found" >&2
             exit 1
           fi
-          cp "${apk}" "release-apk-tv/nuvio-${TV_VERSION}-tv-armeabi-v7a.apk"
+          cp "${apk}" "release-apk-tv/nuvio-${TV_VERSION}-tv-universal.apk"
           ls -lh release-apk-tv
 
       - name: Upload TV artifact
@@ -126,7 +126,9 @@ jobs:
             echo "No TV packages were produced." >&2
             exit 1
           fi
-          tag="tv-${TV_VERSION}"
+          # The tag has to be a plain semantic version so the in-app updater can
+          # compare it with the running build.
+          tag="${TV_VERSION}"
           if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
             echo "Release ${tag} already exists; updating assets only." >&2
             gh release upload "${tag}" "${release_files[@]}" --clobber
