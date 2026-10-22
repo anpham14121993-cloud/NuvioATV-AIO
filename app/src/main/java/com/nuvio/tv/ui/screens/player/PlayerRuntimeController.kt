@@ -510,6 +510,14 @@ class PlayerRuntimeController(
         }
         return narrationController
     }
+
+    /**
+     * True while the narration reads the subtitles and the user asked for the
+     * subtitles to stay off the screen.
+     */
+    @Volatile
+    internal var narrationHidesSubtitles: Boolean = false
+
     @Volatile var videoAspectRatio: Float = 0f
     @Volatile var exoPlayerView: androidx.media3.ui.PlayerView? = null
     val videoBottomFractionState = mutableStateOf<Float?>(null)
@@ -1004,6 +1012,7 @@ class PlayerRuntimeController(
         // causing the resume seek to be silently lost when ExoPlayer's STATE_READY
         // fired before the DB read completed.
         observeSubtitleSettings()
+        observeNarrationStatus()
         if (contentType.equals("cloud", ignoreCase = true)) {
             initializeCloudPlaybackSequence()
         } else {

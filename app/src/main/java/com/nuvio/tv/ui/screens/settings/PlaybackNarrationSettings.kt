@@ -3,6 +3,7 @@ package com.nuvio.tv.ui.screens.settings
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
+import com.nuvio.tv.data.local.NarrationSubtitleMode
 import com.nuvio.tv.data.local.PlayerSettings
 
 /**
@@ -54,6 +55,26 @@ internal fun PlaybackNarrationSection(
             onClick = {
                 val next = voices[(voices.indexOf(settings.ttsNarrationVoice) + 1) % voices.size]
                 onUpdate { setTtsNarrationVoice(next) }
+            }
+        )
+
+        SettingsActionRow(
+            title = stringResource(R.string.playback_narration_subtitle_mode),
+            subtitle = stringResource(
+                if (settings.ttsNarrationSubtitleMode == NarrationSubtitleMode.HIDE) {
+                    R.string.player_narration_hide_subtitles
+                } else {
+                    R.string.player_narration_show_subtitles
+                }
+            ),
+            value = null,
+            onClick = {
+                val next = if (settings.ttsNarrationSubtitleMode == NarrationSubtitleMode.HIDE) {
+                    NarrationSubtitleMode.SHOW
+                } else {
+                    NarrationSubtitleMode.HIDE
+                }
+                onUpdate { setTtsNarrationSubtitleMode(next) }
             }
         )
     }

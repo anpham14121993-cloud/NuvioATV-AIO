@@ -4091,6 +4091,18 @@
     <string name="player_track_role_audio_description">Mô tả âm thanh</string>
     <string name="playback_section_narration_title">Thuyết minh</string>
     <string name="playback_section_narration_desc">Đọc phụ đề bằng giọng Việt ngoại tuyến.</string>
+    <string name="player_narration">Thuyết minh</string>
+    <string name="player_narration_title">Thuyết minh</string>
+    <string name="player_narration_info">Giọng Việt ngoại tuyến đọc dò phụ đề đang hiện trên màn hình. Tiếng phim được hạ nhỏ khi đang thuyết minh.</string>
+    <string name="player_narration_enable">Bật thuyết minh</string>
+    <string name="player_narration_disable">Tắt thuyết minh</string>
+    <string name="player_narration_show_subtitles">Hiện phụ đề</string>
+    <string name="player_narration_show_subtitles_sub">Vừa nghe thuyết minh vừa hiện phụ đề trên màn hình.</string>
+    <string name="player_narration_hide_subtitles">Ẩn phụ đề</string>
+    <string name="player_narration_hide_subtitles_sub">Chỉ nghe thuyết minh, không hiện phụ đề trên màn hình.</string>
+    <string name="player_narration_status_loading">Đang tải mô hình giọng nói ngoại tuyến, có thể mất một lúc.</string>
+    <string name="player_narration_status_ready">Giọng nói ngoại tuyến đã sẵn sàng.</string>
+    <string name="player_narration_status_failed">Không tải được mô hình giọng nói. Hãy giải phóng bộ nhớ rồi thử lại.</string>
     <string name="playback_narration_info">Thuyết minh tiếng Việt ngoại tuyến (VieNeu TTS). Dò phụ đề đang hiện sẽ được đọc to, đồng thời tiếng phim được hạ nhỏ.</string>
     <string name="playback_narration_enabled">Đọc phụ đề thành tiếng</string>
     <string name="playback_narration_enabled_sub">Đọc dò phụ đề hiện tại bằng giọng Việt ngoại tuyến có sẵn.</string>
@@ -4099,4 +4111,5 @@
     <string name="playback_narration_duck">Âm lượng phim khi thuyết minh</string>
     <string name="playback_narration_duck_sub">Phim bị hạ nhỏ tới mức nào khi đang thuyết minh.</string>
     <string name="playback_narration_voice">Giọng thuyết minh</string>
+    <string name="playback_narration_subtitle_mode">Phụ đề khi thuyết minh</string>
 </resources>

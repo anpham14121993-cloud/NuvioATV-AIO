@@ -24,6 +24,9 @@ class NarrationController(
     private val playerProvider: () -> ExoPlayer?,
 ) {
 
+    /** Load progress of the offline model, so the UI can explain a silent narration. */
+    val status = kotlinx.coroutines.flow.MutableStateFlow(NarrationEngineStatus.LOADING)
+
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { runnable ->
@@ -58,6 +61,7 @@ class NarrationController(
     // ── configuration ────────────────────────────────────────────────────────
 
     fun setEnabled(value: Boolean) {
+        if (enabled != value) Log.i(TAG, "narration enabled=$value")
         enabled = value
         if (!value) {
             stopSpeaking()
@@ -88,6 +92,7 @@ class NarrationController(
      */
     fun onCueText(rawText: String?, windowSec: Float? = null) {
         if (!enabled || released) return
+        Log.d(TAG, "cue: ${rawText?.take(60)}")
         val text = cleanText(rawText) ?: return
         if (text == lastSpokenText) return
         if (!shouldNarrateText(text)) return
@@ -190,6 +195,7 @@ class NarrationController(
                     onSpeechStart = { mainHandler.post { speaking.set(true); duckPlayer() } },
                     onSpeechEnd = { mainHandler.post { speaking.set(false); unduckPlayer() } },
                     onError = { text, rate -> Log.w(TAG, "narration error: $text") },
+                    onStatus = { state -> status.value = state },
                 )
             }.getOrElse { error ->
                 Log.e(TAG, "could not create the narration engine", error)

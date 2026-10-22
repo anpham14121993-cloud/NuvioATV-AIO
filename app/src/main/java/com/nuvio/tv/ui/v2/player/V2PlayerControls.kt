@@ -41,7 +41,7 @@ import com.nuvio.tv.ui.screens.player.*
 import com.nuvio.tv.ui.v2.appearance.LocalV2Appearance
 import com.nuvio.tv.ui.v2.components.*
 
-enum class V2PlayerControl { INFO, STATS, AUDIO, SUBTITLES, SOURCES, EPISODES, CHAPTERS, RESTART, MORE, SPEED, ASPECT, EXTERNAL, ENGINE, REPORT }
+enum class V2PlayerControl { INFO, STATS, AUDIO, SUBTITLES, SOURCES, EPISODES, CHAPTERS, RESTART, MORE, SPEED, ASPECT, EXTERNAL, ENGINE, REPORT, NARRATION }
 
 /** Owned by PlayerScreen, so requesters survive a utility panel replacing the control deck. */
 @Stable
@@ -60,7 +60,8 @@ data class V2PlayerActions(
     val more: () -> Unit, val external: () -> Unit, val info: () -> Unit,
     val stats: () -> Unit, val interaction: () -> Unit, val hide: () -> Unit,
     val party: () -> Unit = {},
-    val chapters: () -> Unit = {}
+    val chapters: () -> Unit = {},
+    val narration: () -> Unit = {}
 )
 
 private data class Utility(val id: V2PlayerControl, val icon: ImageVector, val label: String, val action: () -> Unit, val panel: Boolean = false, val enabled: Boolean = true)
@@ -92,6 +93,7 @@ fun V2PlayerControls(
         add(Utility(V2PlayerControl.SOURCES, Icons.Default.Cloud, stringResource(R.string.cd_sources), actions.sources, true))
         if (uiState.currentSeason != null && uiState.currentEpisode != null) add(Utility(V2PlayerControl.EPISODES, Icons.AutoMirrored.Filled.List, stringResource(R.string.player_pill_episodes), actions.episodes, true))
         if (uiState.chapters.isNotEmpty()) add(Utility(V2PlayerControl.CHAPTERS, Icons.Default.Bookmarks, stringResource(R.string.player_chapters), actions.chapters, true))
+        add(Utility(V2PlayerControl.NARRATION, Icons.Default.RecordVoiceOver, stringResource(R.string.player_narration), actions.narration))
         add(Utility(V2PlayerControl.MORE, Icons.Default.MoreHoriz, stringResource(R.string.player_more_actions_title), actions.more))
     }
     val more = buildList {

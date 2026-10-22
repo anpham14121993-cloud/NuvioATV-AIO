@@ -281,9 +281,19 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             activeSidecarGeneration == currentGeneration &&
             view.getTag(R.id.player_view_sidecar_generation_tag) == currentKey
         ) {
-            view.setCues(merged.map { presentSubtitleCue(it) })
+            // Hidden subtitles keep feeding the narration but are not painted.
+            view.setCues(
+                if (narrationHidesSubtitles) emptyList()
+                else merged.map { presentSubtitleCue(it) }
+            )
         }
     }
+}
+
+/** Clears the painted sidecar cues when the narration takes the screen over. */
+internal fun PlayerRuntimeController.clearSidecarSubtitleIfHidden() {
+    if (!narrationHidesSubtitles) return
+    postToSubtitleView { view -> view.setCues(emptyList()) }
 }
 
 private fun PlayerRuntimeController.postToSubtitleView(block: (SubtitleView) -> Unit) {

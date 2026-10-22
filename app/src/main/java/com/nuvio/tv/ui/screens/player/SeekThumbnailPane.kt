@@ -349,6 +349,7 @@ internal fun seekThumbnailHintCovered(state: PlayerUiState): Boolean =
     state.showPauseOverlay || state.showSourcesPanel || state.showEpisodesPanel || state.showChaptersPanel ||
         state.showAudioOverlay || state.showSubtitleOverlay || state.showSubtitleStylePanel ||
         state.showSubtitleTimingDialog || state.showSubtitleDelayOverlay || state.showSpeedDialog ||
+            state.showNarrationDialog ||
         state.showMoreDialog || state.showStreamInfoOverlay || state.showPartyPanel ||
         state.postPlayMode != null
 

@@ -328,6 +328,8 @@ data class PlayerSettings(
     val ttsNarrationVolume: Int = 90,
     val ttsNarrationVoice: String = "Thùy Dung",
     val ttsDuckVolume: Int = 50,
+    /** What the subtitle track does while the narration speaks: [NarrationSubtitleMode.SHOW] or [NarrationSubtitleMode.HIDE]. */
+    val ttsNarrationSubtitleMode: String = NarrationSubtitleMode.SHOW,
     val streamAutoPlayNextEpisodeFallbackEnabled: Boolean = true,
     val streamAutoPlayPreferBingeGroupForNextEpisode: Boolean = true,
     val streamAutoPlayReuseBingeGroup: Boolean = false,
@@ -530,6 +532,15 @@ enum class InternalPlayerEngine {
 
 enum class LibassRenderType {
     CUES, EFFECTS_CANVAS, EFFECTS_OPEN_GL, OVERLAY_CANVAS, OVERLAY_OPEN_GL
+}
+
+/** What happens to the on-screen subtitles while the offline narration speaks. */
+object NarrationSubtitleMode {
+    /** Subtitles stay on screen while the narration reads them. */
+    const val SHOW = "show"
+
+    /** Subtitles keep feeding the narration but are hidden from the screen. */
+    const val HIDE = "hide"
 }
 /**
  * How DV7 streams should be handled at playback time.
@@ -735,6 +746,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val ttsNarrationVolumeKey = intPreferencesKey("tts_narration_volume")
     private val ttsNarrationVoiceKey = stringPreferencesKey("tts_narration_voice")
     private val ttsDuckVolumeKey = intPreferencesKey("tts_duck_volume")
+    private val ttsNarrationSubtitleModeKey = stringPreferencesKey("tts_narration_subtitle_mode")
     private val streamAutoPlayNextEpisodeFallbackEnabledKey = booleanPreferencesKey("stream_auto_play_next_episode_fallback_enabled")
     private val streamAutoPlayPreferBingeGroupForNextEpisodeKey = booleanPreferencesKey("stream_auto_play_prefer_bingegroup_next_episode")
     private val streamAutoPlayReuseBingeGroupKey = booleanPreferencesKey("stream_auto_play_reuse_binge_group")
@@ -1242,6 +1254,9 @@ class PlayerSettingsDataStore @Inject constructor(
                 ttsNarrationVolume = prefs[ttsNarrationVolumeKey] ?: 90,
                 ttsNarrationVoice = prefs[ttsNarrationVoiceKey] ?: "Thùy Dung",
                 ttsDuckVolume = prefs[ttsDuckVolumeKey] ?: 50,
+                ttsNarrationSubtitleMode = prefs[ttsNarrationSubtitleModeKey]
+                    ?.takeIf { it == NarrationSubtitleMode.SHOW || it == NarrationSubtitleMode.HIDE }
+                    ?: NarrationSubtitleMode.SHOW,
                 streamAutoPlayNextEpisodeFallbackEnabled = prefs[streamAutoPlayNextEpisodeFallbackEnabledKey] ?: true,
                 streamAutoPlayPreferBingeGroupForNextEpisode =
                     prefs[streamAutoPlayPreferBingeGroupForNextEpisodeKey] ?: true,
@@ -1876,6 +1891,16 @@ class PlayerSettingsDataStore @Inject constructor(
 
     suspend fun setTtsDuckVolume(volume: Int) {
         store().edit { prefs -> prefs[ttsDuckVolumeKey] = volume.coerceIn(0, 100) }
+    }
+
+    suspend fun setTtsNarrationSubtitleMode(mode: String) {
+        store().edit { prefs ->
+            prefs[ttsNarrationSubtitleModeKey] = if (mode == NarrationSubtitleMode.HIDE) {
+                NarrationSubtitleMode.HIDE
+            } else {
+                NarrationSubtitleMode.SHOW
+            }
+        }
     }
 
     suspend fun setStreamAutoPlayNextEpisodeFallbackEnabled(enabled: Boolean) {

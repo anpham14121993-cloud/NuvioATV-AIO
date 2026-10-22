@@ -128,6 +128,12 @@ data class PlayerUiState(
     val subtitleAutoSyncLoadedTrackKey: String? = null,
     val showSpeedDialog: Boolean = false,
     val showMoreDialog: Boolean = false,
+    // Offline Vietnamese narration (VieNeu TTS).
+    val narrationEnabled: Boolean = false,
+    val narrationSubtitleMode: String = com.nuvio.tv.data.local.NarrationSubtitleMode.SHOW,
+    val showNarrationDialog: Boolean = false,
+    val narrationEngineStatus: com.nuvio.tv.core.player.tts.NarrationEngineStatus =
+        com.nuvio.tv.core.player.tts.NarrationEngineStatus.LOADING,
     val dimHdrOverlays: Boolean = false,
     val isHdrVideo: Boolean = false,
     // Subtitle style settings
@@ -350,6 +356,10 @@ sealed class PlayerEvent {
     data class OnAdjustSubtitleDelay(val deltaMs: Int, val showOverlay: Boolean = true) : PlayerEvent()
     data class OnResetSubtitleDelay(val showOverlay: Boolean = true) : PlayerEvent()
     data object OnShowSpeedDialog : PlayerEvent()
+    data object OnShowNarrationDialog : PlayerEvent()
+    data object OnDismissNarrationDialog : PlayerEvent()
+    data class OnEnableNarration(val subtitleMode: String) : PlayerEvent()
+    data object OnDisableNarration : PlayerEvent()
     data object OnShowMoreDialog : PlayerEvent()
     data object OnDismissMoreDialog : PlayerEvent()
     data object OnShowEpisodesPanel : PlayerEvent()

@@ -4128,6 +4128,18 @@
     <string name="player_track_role_audio_description">Audio description</string>
     <string name="playback_section_narration_title">Narration</string>
     <string name="playback_section_narration_desc">Read the subtitle line aloud with an offline Vietnamese voice.</string>
+    <string name="player_narration">Narration</string>
+    <string name="player_narration_title">Narration</string>
+    <string name="player_narration_info">The offline Vietnamese voice reads the subtitle line on screen. The movie is lowered while it speaks.</string>
+    <string name="player_narration_enable">Turn on narration</string>
+    <string name="player_narration_disable">Turn off narration</string>
+    <string name="player_narration_show_subtitles">Show subtitles</string>
+    <string name="player_narration_show_subtitles_sub">Keep the subtitles on screen while the narration speaks.</string>
+    <string name="player_narration_hide_subtitles">Hide subtitles</string>
+    <string name="player_narration_hide_subtitles_sub">Only hear the narration; the subtitles stay off the screen.</string>
+    <string name="player_narration_status_loading">Loading the offline voice model, this can take a moment.</string>
+    <string name="player_narration_status_ready">The offline voice is ready.</string>
+    <string name="player_narration_status_failed">The offline voice model could not be loaded. Free some storage and try again.</string>
     <string name="playback_narration_info">Offline Vietnamese narration (VieNeu TTS). The subtitle line on screen is read aloud while the movie audio is lowered.</string>
     <string name="playback_narration_enabled">Read subtitles aloud</string>
     <string name="playback_narration_enabled_sub">Speak the current subtitle line with the built-in offline Vietnamese voice.</string>
@@ -4136,4 +4148,5 @@
     <string name="playback_narration_duck">Movie volume while narrating</string>
     <string name="playback_narration_duck_sub">How much the movie is lowered while the narration is playing.</string>
     <string name="playback_narration_voice">Narration voice</string>
+    <string name="playback_narration_subtitle_mode">Subtitles while narrating</string>
 </resources>

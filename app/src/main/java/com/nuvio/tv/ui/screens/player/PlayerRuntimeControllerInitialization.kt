@@ -1403,6 +1403,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                 isSidecarAddonSubtitleActiveProvider = {
                     isSidecarAddonSubtitleActive()
                 },
+                isNarrationHidingSubtitlesProvider = {
+                    narrationHidesSubtitles
+                },
                 videoBoundsFractionProvider = {
                     val pv = exoPlayerView
                     if (pv != null) pv.videoBoundsFraction(videoAspectRatio) else null
@@ -3222,6 +3225,7 @@ private class SubtitleOffsetRenderersFactory(
     private val shouldStripSdhProvider: () -> Boolean,
     private val isBuiltInSubtitleProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean = { false },
+    private val isNarrationHidingSubtitlesProvider: () -> Boolean = { false },
     private val onCueText: (String) -> Unit = {},
     private val videoBoundsFractionProvider: () -> RectF?,
     private val gainAudioProcessor: GainAudioProcessor,
@@ -3484,6 +3488,7 @@ private class SubtitleOffsetRenderersFactory(
             presentCue = presentCue,
             isBuiltInSubtitleProvider = isBuiltInSubtitleProvider,
             isSidecarAddonSubtitleActiveProvider = isSidecarAddonSubtitleActiveProvider,
+            isNarrationHidingSubtitlesProvider = isNarrationHidingSubtitlesProvider,
             videoBoundsFractionProvider = videoBoundsFractionProvider
         )
         val startIndex = out.size
@@ -3539,6 +3544,7 @@ private class CueNormalizingTextOutput(
     private val presentCue: (Cue) -> Cue,
     private val isBuiltInSubtitleProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean,
+    private val isNarrationHidingSubtitlesProvider: () -> Boolean = { false },
     private val videoBoundsFractionProvider: () -> RectF?
 ) : TextOutput {
 
@@ -3574,6 +3580,12 @@ private class CueNormalizingTextOutput(
             val text = mergedCues.joinToString(" ") { it.text.toString() }.trim()
             if (text.isNotEmpty()) onCueText(text)
         }
+        // The narration keeps reading the line, so the cues are only dropped
+        // from the screen when the user asked for hidden subtitles.
+        if (isNarrationHidingSubtitlesProvider()) {
+            delegate.onCues(CueGroup(emptyList(), cueGroup.presentationTimeUs))
+            return
+        }
         delegate.onCues(CueGroup(mergedCues, cueGroup.presentationTimeUs))
     }
 
@@ -3605,6 +3617,10 @@ private class CueNormalizingTextOutput(
         }
         val processedCues = modifiedList ?: cues
         val mergedCues = PlayerSubtitleUtils.mergeOverlappingCues(processedCues)
+        if (isNarrationHidingSubtitlesProvider()) {
+            delegate.onCues(emptyList())
+            return
+        }
         delegate.onCues(mergedCues)
     }
 

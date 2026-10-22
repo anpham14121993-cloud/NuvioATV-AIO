@@ -1126,7 +1126,8 @@ fun PlayerRuntimeController.scheduleHideControls() {
         delay(8000)
         if (_uiState.value.isPlaying && !_uiState.value.showAudioOverlay &&
             !_uiState.value.showSubtitleOverlay && !_uiState.value.showSubtitleStylePanel &&
-            !_uiState.value.showSpeedDialog && !_uiState.value.showMoreDialog &&
+            !_uiState.value.showSpeedDialog && !_uiState.value.showNarrationDialog &&
+            !_uiState.value.showMoreDialog &&
             !_uiState.value.showSubtitleDelayOverlay &&
             !_uiState.value.showSubtitleTimingDialog &&
             !_uiState.value.showEpisodesPanel && !_uiState.value.showChaptersPanel && !_uiState.value.showSourcesPanel &&
@@ -1236,7 +1237,7 @@ internal fun PlayerRuntimeController.schedulePauseOverlay() {
         delay(pauseOverlayDelayMs)
         val s = _uiState.value
         val anyPanelOpen = s.showSubtitleOverlay || s.showSubtitleStylePanel ||
-            s.showSpeedDialog || s.showMoreDialog || s.showEpisodesPanel || s.showChaptersPanel ||
+            s.showSpeedDialog || s.showNarrationDialog || s.showMoreDialog || s.showEpisodesPanel || s.showChaptersPanel ||
             s.showSourcesPanel || s.showAudioOverlay || s.showStreamInfoOverlay ||
             s.showSubtitleTimingDialog || s.showSubtitleDelayOverlay || s.showPartyPanel
         if (!s.isPlaying && s.pauseOverlayEnabled && s.error == null && !anyPanelOpen) {
@@ -1755,6 +1756,29 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                     showControls = true
                 )
             }
+        }
+        PlayerEvent.OnShowNarrationDialog -> {
+            _uiState.update {
+                it.copy(
+                    showNarrationDialog = true,
+                    showAudioOverlay = false,
+                    showSubtitleOverlay = false,
+                    showSubtitleStylePanel = false,
+                    showMoreDialog = false,
+                    showSpeedDialog = false,
+                    showControls = true
+                )
+            }
+        }
+        PlayerEvent.OnDismissNarrationDialog -> {
+            _uiState.update { it.copy(showNarrationDialog = false) }
+            scheduleHideControls()
+        }
+        is PlayerEvent.OnEnableNarration -> {
+            enableNarration(event.subtitleMode)
+        }
+        PlayerEvent.OnDisableNarration -> {
+            disableNarration()
         }
         PlayerEvent.OnShowMoreDialog -> {
             _uiState.update {

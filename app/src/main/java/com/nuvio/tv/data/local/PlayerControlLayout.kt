@@ -7,7 +7,7 @@ enum class PlayerControlAction(val id: String) {
     PLAY_PAUSE("play_pause"), RESTART("restart"), EPISODES("episodes"), CHAPTERS("chapters"), NEXT_EPISODE("next_episode"),
     STATS("stats"), AUDIO("audio"), SUBTITLES("subtitles"), SOURCES("sources"), WATCH_PARTY("watch_party"),
     MORE("more"), SPEED("speed"), ASPECT("aspect"), EXTERNAL("external"), ENGINE("engine"), REPORT("report"),
-    INFO("info");
+    INFO("info"), NARRATION("narration");
 
     companion object {
         /** Actions this build can show at all; saved placements of the others are kept but never drawn. */
@@ -110,7 +110,7 @@ class PlayerControlLayout private constructor(private val placements: List<Playe
                 PlayerControlAction.SUBTITLES, PlayerControlAction.SOURCES, PlayerControlAction.WATCH_PARTY,
                 PlayerControlAction.MORE,
                 PlayerControlAction.SPEED, PlayerControlAction.ASPECT, PlayerControlAction.EXTERNAL,
-                PlayerControlAction.ENGINE, PlayerControlAction.REPORT)
+                PlayerControlAction.ENGINE, PlayerControlAction.REPORT, PlayerControlAction.NARRATION)
             val v2Utilities = listOf(PlayerControlAction.EPISODES, PlayerControlAction.CHAPTERS)
             val entries = defaults.map { entry -> entry.copy(
                 group = if (v2 && entry.action in v2Utilities) PlayerControlGroup.RIGHT else entry.group,

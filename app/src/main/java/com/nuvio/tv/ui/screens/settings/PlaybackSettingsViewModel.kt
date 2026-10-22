@@ -625,6 +625,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setTtsDuckVolume(volume)
     }
 
+    suspend fun setTtsNarrationSubtitleMode(mode: String) {
+        playerSettingsDataStore.setTtsNarrationSubtitleMode(mode)
+    }
+
     suspend fun setStreamAutoPlayNextEpisodeEnabled(enabled: Boolean) {
         playerSettingsDataStore.setStreamAutoPlayNextEpisodeEnabled(enabled)
     }

@@ -14,7 +14,7 @@ internal fun playerControlAvailability(
     addAll(listOf(PlayerControlAction.PLAY_PAUSE, PlayerControlAction.STATS,
         PlayerControlAction.SOURCES, PlayerControlAction.MORE,
         PlayerControlAction.ENGINE, PlayerControlAction.WATCH_PARTY, PlayerControlAction.INFO,
-        PlayerControlAction.SPEED))
+        PlayerControlAction.SPEED, PlayerControlAction.NARRATION))
     if (!state.isServerStream) add(PlayerControlAction.EXTERNAL)
     if (!timeline.isLive && timeline.duration > 0L) add(PlayerControlAction.RESTART)
     if (state.currentSeason != null && state.currentEpisode != null) add(PlayerControlAction.EPISODES)

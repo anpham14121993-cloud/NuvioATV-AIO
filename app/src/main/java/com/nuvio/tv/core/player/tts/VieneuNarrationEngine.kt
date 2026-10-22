@@ -34,6 +34,7 @@ class VieneuNarrationEngine(
     private val onSpeechStart: () -> Unit = {},
     private val onSpeechEnd: () -> Unit = {},
     private val onError: (text: String, rate: Int) -> Unit = { _, _ -> },
+    private val onStatus: (NarrationEngineStatus) -> Unit = {},
 ) : NarrationTtsEngine {
 
     private companion object {
@@ -228,6 +229,7 @@ class VieneuNarrationEngine(
         synchronized(loadLock) {
             engine?.let { return it }
             try {
+                onStatus(NarrationEngineStatus.LOADING)
                 val base = VieneuModelStore.modelDir(appContext)
                 val heads = File(base, "heads.bin")
                 val tokJson = readText(File(base, "tokenizer.json"))
@@ -240,10 +242,12 @@ class VieneuNarrationEngine(
                 Log.i(TAG, "engine: load ok")
                 Log.i(TAG, "engine loaded in ${"%.2f".format((System.nanoTime() - t0) / 1e9)}s")
                 loadVoices(File(base, "voices_test.json"))
+                onStatus(NarrationEngineStatus.READY)
             } catch (t: Throwable) {
                 loadError = t.javaClass.simpleName + ":" + (t.message?.take(60) ?: "")
                 Log.i(TAG, "engine: load FAIL $loadError")
                 Log.e(TAG, "engine load failed", t)
+                onStatus(NarrationEngineStatus.FAILED)
             }
             return engine
         }

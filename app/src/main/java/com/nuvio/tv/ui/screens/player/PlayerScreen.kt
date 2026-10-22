@@ -404,6 +404,8 @@ fun PlayerScreen(
             viewModel.onEvent(PlayerEvent.OnDismissTransientOverlay)
         } else if (uiState.showAudioOverlay || uiState.showSubtitleOverlay) {
             viewModel.onEvent(PlayerEvent.OnDismissTransientOverlay)
+        } else if (uiState.showNarrationDialog) {
+            viewModel.onEvent(PlayerEvent.OnDismissNarrationDialog)
         } else if (uiState.showStreamInfoOverlay) {
             dismissStreamInfoOverlay()
         } else if (uiState.showPartyPanel) {
@@ -669,14 +671,15 @@ fun PlayerScreen(
         if (!uiState.showControls) customFocus.controlsHidden(panelOpen = uiState.showEpisodesPanel || uiState.showChaptersPanel ||
             uiState.showSourcesPanel || uiState.showAudioOverlay || uiState.showSubtitleOverlay ||
             uiState.showSubtitleStylePanel || uiState.showSubtitleDelayOverlay || uiState.showSubtitleTimingDialog ||
-            uiState.showSpeedDialog || uiState.showStreamInfoOverlay || uiState.showPartyPanel)
+            uiState.showSpeedDialog || uiState.showNarrationDialog || uiState.showStreamInfoOverlay || uiState.showPartyPanel)
         if (shouldConfirmNextEpisodeOnEnd || postPlayRecommendationState.isVisible) return@LaunchedEffect
         if (uiState.error != null) return@LaunchedEffect
         if (uiState.showControls && !uiState.showEpisodesPanel && !uiState.showChaptersPanel && !uiState.showSourcesPanel &&
             !uiState.showAudioOverlay && !uiState.showSubtitleOverlay &&
             !uiState.showSubtitleStylePanel && !uiState.showSubtitleDelayOverlay &&
             !uiState.showSubtitleTimingDialog &&
-            !uiState.showSpeedDialog && !((isV2 || uiState.controlLayout != null) && uiState.showStreamInfoOverlay)
+            !uiState.showSpeedDialog && !uiState.showNarrationDialog &&
+            !((isV2 || uiState.controlLayout != null) && uiState.showStreamInfoOverlay)
         ) {
             // Let the returning control deck attach after the outgoing panel fades.
             val returning = if (isV2 && uiState.controlLayout == null) v2Focus.pendingReturn else null
@@ -792,7 +795,7 @@ fun PlayerScreen(
     val remoteButtonsReady = uiState.error == null &&
         !uiState.showEpisodesPanel && !uiState.showChaptersPanel && !uiState.showSourcesPanel &&
         !uiState.showAudioOverlay && !uiState.showSubtitleOverlay &&
-        !uiState.showSubtitleStylePanel && !uiState.showSpeedDialog &&
+        !uiState.showSubtitleStylePanel && !uiState.showSpeedDialog && !uiState.showNarrationDialog &&
         !uiState.showSubtitleDelayOverlay && !uiState.showSubtitleTimingDialog &&
         !uiState.showMoreDialog && !uiState.showStreamInfoOverlay && !uiState.showPartyPanel &&
         !shouldConfirmNextEpisodeOnEnd &&
@@ -1250,7 +1253,7 @@ fun PlayerScreen(
                 // When a side panel or dialog is open, let it handle all keys
                 val panelOrDialogOpen = uiState.showEpisodesPanel || uiState.showChaptersPanel || uiState.showSourcesPanel ||
                         uiState.showAudioOverlay || uiState.showSubtitleOverlay ||
-                        uiState.showSubtitleStylePanel || uiState.showSpeedDialog ||
+                        uiState.showSubtitleStylePanel || uiState.showSpeedDialog || uiState.showNarrationDialog ||
                         uiState.showSubtitleDelayOverlay || uiState.showSubtitleTimingDialog ||
                         uiState.showMoreDialog ||
                         shouldConfirmNextEpisodeOnEnd ||
@@ -1821,6 +1824,7 @@ fun PlayerScreen(
             val v2UtilityVisible = isV2 && (
                 uiState.showAudioOverlay || uiState.showSubtitleOverlay || uiState.showSubtitleStylePanel ||
                     uiState.showSourcesPanel || uiState.showEpisodesPanel || uiState.showChaptersPanel || uiState.showSpeedDialog ||
+                    uiState.showNarrationDialog ||
                     uiState.showStreamInfoOverlay || uiState.showSubtitleDelayOverlay || uiState.showSubtitleTimingDialog
                 )
             PlaybackStatsOverlay(
@@ -2041,6 +2045,7 @@ fun PlayerScreen(
                     onShowAudioDialog = { viewModel.onEvent(PlayerEvent.OnShowAudioOverlay) },
                     onShowSubtitleDialog = { viewModel.onEvent(PlayerEvent.OnShowSubtitleOverlay) },
                     onShowSpeedDialog = { viewModel.onEvent(PlayerEvent.OnShowSpeedDialog) },
+                    onShowNarrationDialog = { viewModel.onEvent(PlayerEvent.OnShowNarrationDialog) },
                     onToggleAspectRatio = {
                         Log.d("PlayerScreen", "onToggleAspectRatio called - dispatching event")
                         viewModel.onEvent(PlayerEvent.OnToggleAspectRatio)
@@ -2138,7 +2143,8 @@ fun PlayerScreen(
                     !uiState.showAudioOverlay &&
                     !uiState.showSubtitleOverlay &&
                     !uiState.showSubtitleTimingDialog &&
-                    !uiState.showSpeedDialog,
+                    !uiState.showSpeedDialog &&
+                    !uiState.showNarrationDialog,
                 enter = fadeIn(animationSpec = tween(120)),
                 exit = fadeOut(animationSpec = tween(120)),
                 modifier = Modifier
@@ -2445,6 +2451,17 @@ fun PlayerScreen(
                     currentSpeed = uiState.playbackSpeed,
                     onSpeedSelected = { viewModel.onEvent(PlayerEvent.OnSetPlaybackSpeed(it)) },
                     onDismiss = { viewModel.onEvent(PlayerEvent.OnDismissTransientOverlay) }
+                )
+            }
+
+            if (uiState.showNarrationDialog) {
+                PlayerNarrationDialog(
+                    narrationEnabled = uiState.narrationEnabled,
+                    subtitleMode = uiState.narrationSubtitleMode,
+                    engineStatus = uiState.narrationEngineStatus,
+                    onEnable = { mode -> viewModel.onEvent(PlayerEvent.OnEnableNarration(mode)) },
+                    onDisable = { viewModel.onEvent(PlayerEvent.OnDisableNarration) },
+                    onDismiss = { viewModel.onEvent(PlayerEvent.OnDismissNarrationDialog) }
                 )
             }
         }
@@ -2971,6 +2988,7 @@ private fun PlayerControlsOverlay(
     onShowAudioDialog: () -> Unit,
     onShowSubtitleDialog: () -> Unit,
     onShowSpeedDialog: () -> Unit,
+    onShowNarrationDialog: () -> Unit = {},
     onToggleAspectRatio: () -> Unit,
     onSwitchPlayerEngine: () -> Unit,
     onReportPlaybackIssue: () -> Unit,
@@ -3005,6 +3023,7 @@ private fun PlayerControlsOverlay(
                 aspect = onToggleAspectRatio, engine = onSwitchPlayerEngine, report = onReportPlaybackIssue,
                 more = onToggleMoreActions, external = onOpenInExternalPlayer, info = onShowStreamInfo,
                 stats = onTogglePlaybackStats, interaction = onResetHideTimer, hide = onHideControls,
+                narration = onShowNarrationDialog,
                 party = { viewModel.onEvent(PlayerEvent.OnShowPartyPanel) }), reportCodeVisible)
         return
     }
@@ -3018,7 +3037,8 @@ private fun PlayerControlsOverlay(
                 audio = onShowAudioDialog, subtitles = onShowSubtitleDialog, speed = onShowSpeedDialog,
                 aspect = onToggleAspectRatio, engine = onSwitchPlayerEngine, report = onReportPlaybackIssue,
                 more = onToggleMoreActions, external = onOpenInExternalPlayer, info = onShowStreamInfo,
-                stats = onTogglePlaybackStats, interaction = onResetHideTimer, hide = onHideControls
+                stats = onTogglePlaybackStats, interaction = onResetHideTimer, hide = onHideControls,
+                narration = onShowNarrationDialog
             ), reportCodeVisible
         )
         return
@@ -3245,6 +3265,14 @@ private fun PlayerControlsOverlay(
                             icon = Icons.Default.Speed,
                             contentDescription = stringResource(R.string.cd_playback_speed),
                             onClick = onShowSpeedDialog,
+                            downFocusRequester = progressBarFocusRequester,
+                            onUpKey = onHideControls,
+                            onFocused = onResetHideTimer
+                        )
+                        ControlButton(
+                            icon = Icons.Default.RecordVoiceOver,
+                            contentDescription = stringResource(R.string.player_narration),
+                            onClick = onShowNarrationDialog,
                             downFocusRequester = progressBarFocusRequester,
                             onUpKey = onHideControls,
                             onFocused = onResetHideTimer
