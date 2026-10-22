@@ -14,6 +14,7 @@ import coil3.request.crossfade
 import coil3.svg.SvgDecoder
 import com.nuvio.app.core.poster.CustomPosterFallbackInterceptor
 import com.nuvio.app.core.ui.LocalDeviceType
+import com.nuvio.app.core.ui.TvFocusHost
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
 import com.nuvio.app.core.ui.detectDeviceType
 import com.nuvio.app.core.ui.NuvioTheme
@@ -106,7 +107,7 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
 
     NuvioTheme(appTheme = selectedTheme, amoled = amoledEnabled, customThemeColors = customThemeColors) {
         CompositionLocalProvider(LocalDeviceType provides deviceType) {
-            content()
+            TvFocusHost { content() }
         }
     }
 }

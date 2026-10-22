@@ -56,6 +56,8 @@ import nuvio.composeapp.generated.resources.playback_unavailable
 import nuvio.composeapp.generated.resources.random_episode_title
 import nuvio.composeapp.generated.resources.shuffle_stop
 import org.jetbrains.compose.resources.stringResource
+import com.nuvio.app.core.ui.tvDpadActivate
+import com.nuvio.app.core.ui.tvFocusTarget
 
 data class DetailSecondaryAction(
     val label: String,
@@ -123,6 +125,12 @@ fun DetailActionButtons(
                             onLongClick = onPlayLongClick,
                             role = Role.Button,
                         )
+                        .tvFocusTarget(
+                            enabled = playEnabled,
+                            shape = playShape,
+                            scaleOnFocus = 1.03f,
+                        )
+                        .tvDpadActivate { if (playEnabled) onPlayClick() }
                         .height(buttonHeight),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
