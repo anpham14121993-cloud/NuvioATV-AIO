@@ -1,6 +1,7 @@
 package com.nuvio.app.core.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.Composable
@@ -91,20 +92,23 @@ internal fun Modifier.posterCardClickable(
         }
         .then(this)
     if (onClick == null && onLongClick == null) return posterModifier
+    val performClick: () -> Unit = {
+        if (onClick != null) {
+            source.bounds?.let { bounds ->
+                onPosterClickAnchor?.invoke(
+                    PosterZoomAnchor(bounds, zoomImageUrl, zoomCornerRadius).also { it.source = source },
+                )
+            }
+            onClick()
+        }
+    }
     return posterModifier
+        .tvFocusTarget(shape = RoundedCornerShape(zoomCornerRadius))
+        .tvDpadActivate(performClick)
         .combinedClickable(
             interactionSource = null,
             indication = if (onPosterClickAnchor == null) LocalIndication.current else null,
-            onClick = {
-                if (onClick != null) {
-                    source.bounds?.let { bounds ->
-                        onPosterClickAnchor?.invoke(
-                            PosterZoomAnchor(bounds, zoomImageUrl, zoomCornerRadius).also { it.source = source },
-                        )
-                    }
-                    onClick()
-                }
-            },
+            onClick = performClick,
             onLongClick = onLongClick?.let { longClick ->
                 {
                     source.bounds?.let { cardBounds ->

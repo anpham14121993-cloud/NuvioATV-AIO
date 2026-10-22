@@ -437,6 +437,7 @@ kotlin {
                 implementation(libs.androidx.work.runtime)
                 implementation(libs.coil.gif)
                 implementation("androidx.recyclerview:recyclerview:1.4.0")
+                implementation("com.google.zxing:core:3.5.3")
                 implementation("com.squareup.okhttp3:okhttp:4.12.0")
                 implementation("com.google.code.gson:gson:2.11.0")
                 implementation("io.github.peerless2012:ass-media:0.5.1")

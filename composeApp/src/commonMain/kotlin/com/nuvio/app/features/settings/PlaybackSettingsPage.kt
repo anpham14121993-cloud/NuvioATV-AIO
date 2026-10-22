@@ -1,6 +1,7 @@
 package com.nuvio.app.features.settings
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.features.player.audioPassthroughSupportedEncodings
 import com.nuvio.app.features.player.LastProbeStreamStore
 import com.nuvio.app.features.player.NetworkProbe
 import com.nuvio.app.features.player.ProbeOutcome
@@ -126,6 +127,7 @@ internal fun LazyListScope.playbackSettingsContent(
     decoderPriority: Int,
     mapDV7ToHevc: Boolean,
     tunnelingEnabled: Boolean,
+    audioPassthroughEnabled: Boolean,
     useLibass: Boolean,
     libassRenderType: String,
 ) {
@@ -149,6 +151,7 @@ internal fun LazyListScope.playbackSettingsContent(
             decoderPriority = decoderPriority,
             mapDV7ToHevc = mapDV7ToHevc,
             tunnelingEnabled = tunnelingEnabled,
+            audioPassthroughEnabled = audioPassthroughEnabled,
             useLibass = useLibass,
             libassRenderType = libassRenderType,
         )
@@ -335,6 +338,7 @@ private fun PlaybackSettingsSection(
     decoderPriority: Int,
     mapDV7ToHevc: Boolean,
     tunnelingEnabled: Boolean,
+    audioPassthroughEnabled: Boolean,
     useLibass: Boolean,
     libassRenderType: String,
 ) {
@@ -1090,6 +1094,23 @@ val p2pStreamingState by P2pStreamingEngine.state.collectAsStateWithLifecycle()
                         enabled = exoOptionsEnabled,
                         isTablet = isTablet,
                         onCheckedChange = PlayerSettingsRepository::setTunnelingEnabled,
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    val passthroughEncodings = remember { audioPassthroughSupportedEncodings() }
+                    SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_audio_passthrough),
+                        description = if (passthroughEncodings.isEmpty()) {
+                            stringResource(Res.string.settings_playback_audio_passthrough_unsupported)
+                        } else {
+                            stringResource(
+                                Res.string.settings_playback_audio_passthrough_description,
+                                passthroughEncodings.joinToString(", "),
+                            )
+                        },
+                        checked = audioPassthroughEnabled,
+                        enabled = exoOptionsEnabled && passthroughEncodings.isNotEmpty(),
+                        isTablet = isTablet,
+                        onCheckedChange = PlayerSettingsRepository::setAudioPassthroughEnabled,
                     )
                     SettingsGroupDivider(isTablet = isTablet)
                     val nativeMemorySupported = isExoNativeMemorySupported()

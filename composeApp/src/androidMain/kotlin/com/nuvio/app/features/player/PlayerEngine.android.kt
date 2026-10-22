@@ -50,6 +50,9 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
@@ -414,6 +417,11 @@ private fun ExoPlayerSurface(
         playerSettings.targetBufferSizeMb,
     ) {
         applyExoPlayerNativeMemory(playerSettings.exoNativeMemoryEnabled)
+        val passthroughSupport = if (playerSettings.audioPassthroughEnabled) {
+            AudioPassthroughProbe.support(context.applicationContext).takeIf { it.any }
+        } else {
+            null
+        }
         val renderersFactory = SubtitleOffsetRenderersFactory(
             context = context,
             subtitleDelayUsProvider = { latestSubtitleDelayMs.value.toLong() * 1_000L },
@@ -424,6 +432,7 @@ private fun ExoPlayerSurface(
             videoBoundsFractionProvider = {
                 playerViewRef?.videoBoundsFraction(latestVideoAspectRatio.value)
             },
+            passthroughSupport = passthroughSupport,
         )
             .setExtensionRendererMode(effectiveDecoderPriority)
             .setEnableDecoderFallback(true)
@@ -2401,7 +2410,49 @@ private class SubtitleOffsetRenderersFactory(
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val shouldStripSdhProvider: () -> Boolean,
     private val videoBoundsFractionProvider: () -> RectF?,
+    private val passthroughSupport: PassthroughSupport? = null,
 ) : DefaultRenderersFactory(context) {
+
+    override fun buildAudioRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableAudioTrackPlaybackParams: Boolean,
+        audioSink: AudioSink,
+        eventHandler: android.os.Handler,
+        audioRendererEventListener: AudioRendererEventListener,
+        out: ArrayList<Renderer>,
+    ) {
+        val support = passthroughSupport
+        if (support == null || !support.any) {
+            super.buildAudioRenderers(
+                context,
+                extensionRendererMode,
+                mediaCodecSelector,
+                enableAudioTrackPlaybackParams,
+                audioSink,
+                eventHandler,
+                audioRendererEventListener,
+                out,
+            )
+            return
+        }
+        // The passthrough renderer is added first so the track selector prefers it
+        // for AC-3 / E-AC-3; every other codec still uses the regular renderers.
+        val startIndex = out.size
+        super.buildAudioRenderers(
+            context,
+            extensionRendererMode,
+            mediaCodecSelector,
+            enableAudioTrackPlaybackParams,
+            audioSink,
+            eventHandler,
+            audioRendererEventListener,
+            out,
+        )
+        out.add(startIndex, PassthroughAudioRenderer(support))
+    }
+
     override fun buildTextRenderers(
         context: Context,
         output: TextOutput,

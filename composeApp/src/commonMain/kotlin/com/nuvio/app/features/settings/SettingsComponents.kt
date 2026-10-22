@@ -50,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.NuvioTokens
+import com.nuvio.app.core.ui.tvDpadActivate
+import com.nuvio.app.core.ui.tvFocusTarget
 import com.nuvio.app.core.ui.NuvioActionLabel
 import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.NuvioSectionLabel
@@ -250,6 +252,8 @@ internal fun SettingsNavigationRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
+            .tvFocusTarget(enabled = enabled, shape = tokens.shapes.compactCard, scaleOnFocus = 1.01f)
+            .tvDpadActivate { if (enabled) onClick() }
             .padding(horizontal = horizontalPadding, vertical = verticalPadding)
             .alpha(if (enabled) NuvioTokens.Opacity.visible else tokens.opacity.medium),
         horizontalArrangement = Arrangement.Start,
@@ -330,6 +334,8 @@ internal fun SettingsSwitchRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled) { onCheckedChange(!checked) }
+            .tvFocusTarget(enabled = enabled, shape = tokens.shapes.compactCard, scaleOnFocus = 1.01f)
+            .tvDpadActivate { if (enabled) onCheckedChange(!checked) }
             .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,

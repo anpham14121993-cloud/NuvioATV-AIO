@@ -117,6 +117,13 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { layoutSize = it }
+            .tvPlayerDpadKeys(
+                intercept = !controlsVisible,
+                onTogglePlayback = { togglePlayback() },
+                onSeekBack = { seekBy(-10_000L) },
+                onSeekForward = { seekBy(10_000L) },
+                onRevealControls = { controlsVisible = true },
+            )
             .playerSurfaceTapGestures(
                 layoutSize = layoutSize,
                 playbackGesturesEnabled = playbackGesturesEnabled,

@@ -360,6 +360,8 @@
     <string name="compose_auth_link_signing_in">Đang đăng nhập…</string>
     <string name="compose_auth_link_try_again">Thử lại</string>
     <string name="compose_auth_link_waiting">Đang chờ phê duyệt…</string>
+    <string name="compose_auth_link_scan_qr">Mã QR đăng nhập</string>
+    <string name="compose_auth_link_scan_qr_hint">Quét mã này bằng ứng dụng Nuvio trên điện thoại để duyệt đăng nhập</string>
     <string name="compose_auth_or_separator"> hoặc </string>
     <string name="compose_auth_password">Mật khẩu</string>
     <string name="compose_auth_sign_in_subtitle">Đăng nhập để truy cập thư viện và tiến trình xem của bạn</string>
@@ -1229,6 +1231,9 @@
     <string name="settings_playback_timeout_seconds">%1$ss</string>
     <string name="settings_playback_timeout_unlimited">Không giới hạn</string>
     <string name="settings_playback_tunneled_playback">Phát trực tiếp qua phần cứng</string>
+    <string name="settings_playback_audio_passthrough">Passthrough âm thanh vòm</string>
+    <string name="settings_playback_audio_passthrough_description">Gửi Dolby Digital / Dolby Digital Plus dạng bitstream thẳng tới TV (%1$s). Cần tivi hoặc amply hỗ trợ passthrough; không giảm được âm lượng phim khi đang thuyết minh.</string>
+    <string name="settings_playback_audio_passthrough_unsupported">Thiết bị này không báo hỗ trợ passthrough nên âm thanh vẫn được giải mã.</string>
     <string name="settings_playback_tunneled_playback_description">Đồng bộ âm thanh/video ở cấp phần cứng. Có thể cải thiện việc phát lại trên một số thiết bị Android TV</string>
     <string name="settings_tmdb_api_key_label">Mã khoá API</string>
     <string name="settings_tmdb_api_key_override_description">Dùng mã khóa API TMDB của riêng bạn hoặc bỏ trống để sử dụng mặc định.</string>

@@ -58,6 +58,7 @@ actual object PlayerSettingsStorage {
     private const val decoderPriorityKey = "decoder_priority"
     private const val mapDV7ToHevcKey = "map_dv7_to_hevc"
     private const val tunnelingEnabledKey = "tunneling_enabled"
+    private const val audioPassthroughEnabledKey = "audio_passthrough_enabled"
     private const val exoNativeMemoryEnabledKey = "exo_native_memory_enabled"
     private const val vodCacheEnabledKey = "vod_cache_enabled"
     private const val vodCacheSizeModeKey = "vod_cache_size_mode"
@@ -779,6 +780,23 @@ actual object PlayerSettingsStorage {
         preferences
             ?.edit()
             ?.putBoolean(ProfileScopedKey.of(tunnelingEnabledKey), enabled)
+            ?.apply()
+    }
+
+    actual fun loadAudioPassthroughEnabled(): Boolean? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(audioPassthroughEnabledKey)
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getBoolean(key, false)
+            } else {
+                null
+            }
+        }
+
+    actual fun saveAudioPassthroughEnabled(enabled: Boolean) {
+        preferences
+            ?.edit()
+            ?.putBoolean(ProfileScopedKey.of(audioPassthroughEnabledKey), enabled)
             ?.apply()
     }
 

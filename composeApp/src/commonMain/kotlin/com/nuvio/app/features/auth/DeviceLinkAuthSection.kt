@@ -1,5 +1,6 @@
 package com.nuvio.app.features.auth
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,13 +22,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nuvio.app.core.auth.DeviceLinkAuthFailure
+import com.nuvio.app.core.ui.rememberQrCode
 import com.nuvio.app.core.auth.DeviceLinkAuthState
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_auth_link_cancel
@@ -35,6 +38,8 @@ import nuvio.composeapp.generated.resources.compose_auth_link_creating_code
 import nuvio.composeapp.generated.resources.compose_auth_link_failed
 import nuvio.composeapp.generated.resources.compose_auth_link_open
 import nuvio.composeapp.generated.resources.compose_auth_link_open_failed
+import nuvio.composeapp.generated.resources.compose_auth_link_scan_qr
+import nuvio.composeapp.generated.resources.compose_auth_link_scan_qr_hint
 import nuvio.composeapp.generated.resources.compose_auth_link_sign_in
 import nuvio.composeapp.generated.resources.compose_auth_link_signing_in
 import nuvio.composeapp.generated.resources.compose_auth_link_try_again
@@ -73,10 +78,37 @@ internal fun DeviceLinkAuthSection(
             )
         }
         is DeviceLinkAuthState.Waiting -> {
+            val qrBitmap = rememberQrCode(state.verificationUrl, 512)
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                if (qrBitmap != null) {
+                    Image(
+                        bitmap = qrBitmap,
+                        contentDescription = stringResource(Res.string.compose_auth_link_scan_qr),
+                        modifier = Modifier
+                            .size((168f * scale).dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(androidx.compose.ui.graphics.Color.White),
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp * scale))
+
+                    Text(
+                        text = stringResource(Res.string.compose_auth_link_scan_qr_hint),
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = AuthTextSecondary,
+                            fontSize = (13f * scale).sp,
+                            lineHeight = (18f * scale).sp,
+                        ),
+                        textAlign = TextAlign.Center,
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp * scale))
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

@@ -249,6 +249,8 @@ private class NuvioNavigationBarScopeImpl(
                         role = Role.Tab,
                         onClick = onClick,
                     )
+                    .tvFocusTarget(shape = RoundedCornerShape(NuvioTokens.Radius.full), scaleOnFocus = 1.08f)
+                    .tvDpadActivate(onClick)
                     .padding(vertical = itemVerticalPadding),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -298,6 +300,8 @@ private class NuvioNavigationBarScopeImpl(
                         role = Role.Tab,
                         onClick = onClick,
                     )
+                    .tvFocusTarget(shape = RoundedCornerShape(NuvioTokens.Radius.full), scaleOnFocus = 1.08f)
+                    .tvDpadActivate(onClick)
                     .padding(vertical = itemVerticalPadding),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -345,6 +349,8 @@ private class NuvioNavigationBarScopeImpl(
                         role = Role.Tab,
                         onClick = onClick,
                     )
+                    .tvFocusTarget(shape = RoundedCornerShape(NuvioTokens.Radius.full), scaleOnFocus = 1.08f)
+                    .tvDpadActivate(onClick)
                     .padding(vertical = itemVerticalPadding),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {

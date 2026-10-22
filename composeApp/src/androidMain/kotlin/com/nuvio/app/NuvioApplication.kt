@@ -25,6 +25,8 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         installCrashLogger()
         com.nuvio.app.features.player.TtsTrace.init(this)
+        com.nuvio.app.core.ui.initDeviceTypeContext(this)
+        com.nuvio.app.core.ui.QrCodes.install(com.nuvio.app.core.ui.AndroidQrCodeRenderer())
         com.nuvio.app.features.player.TtsTrace.log("app: cpu=" + cpuFeatures())
         // Persist TTS narration settings immediately, from any screen. The shared
         // repository cannot touch platform storage, so Android installs this hook

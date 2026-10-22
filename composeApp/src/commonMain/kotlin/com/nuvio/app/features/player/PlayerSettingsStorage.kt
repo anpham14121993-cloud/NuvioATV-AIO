@@ -81,6 +81,8 @@ internal expect object PlayerSettingsStorage {
     fun saveMapDV7ToHevc(enabled: Boolean)
     fun loadTunnelingEnabled(): Boolean?
     fun saveTunnelingEnabled(enabled: Boolean)
+    fun loadAudioPassthroughEnabled(): Boolean?
+    fun saveAudioPassthroughEnabled(enabled: Boolean)
     fun loadExoNativeMemoryEnabled(): Boolean?
     fun saveExoNativeMemoryEnabled(enabled: Boolean)
     fun loadVodCacheEnabled(): Boolean?

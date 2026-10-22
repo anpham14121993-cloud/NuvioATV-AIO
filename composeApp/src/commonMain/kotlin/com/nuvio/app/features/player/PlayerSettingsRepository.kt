@@ -60,6 +60,7 @@ data class PlayerSettingsUiState(
     val decoderPriority: Int = 1,
     val mapDV7ToHevc: Boolean = false,
     val tunnelingEnabled: Boolean = false,
+    val audioPassthroughEnabled: Boolean = false,
     val exoNativeMemoryEnabled: Boolean = false,
     val bufferEngineEnabled: Boolean = false,
     val minBufferMs: Int = PlaybackBufferSettings.DEFAULT_MIN_BUFFER_MS,
@@ -152,6 +153,7 @@ object PlayerSettingsRepository {
     private var decoderPriority = 1
     private var mapDV7ToHevc = false
     private var tunnelingEnabled = false
+    private var audioPassthroughEnabled = false
     private var exoNativeMemoryEnabled = false
     private var bufferEngineEnabled = false
     private var minBufferMs = PlaybackBufferSettings.DEFAULT_MIN_BUFFER_MS
@@ -246,6 +248,7 @@ object PlayerSettingsRepository {
         decoderPriority = 1
         mapDV7ToHevc = false
         tunnelingEnabled = false
+        audioPassthroughEnabled = false
         exoNativeMemoryEnabled = false
         bufferEngineEnabled = false
         minBufferMs = PlaybackBufferSettings.DEFAULT_MIN_BUFFER_MS
@@ -374,6 +377,7 @@ object PlayerSettingsRepository {
         decoderPriority = PlayerSettingsStorage.loadDecoderPriority() ?: 1
         mapDV7ToHevc = PlayerSettingsStorage.loadMapDV7ToHevc() ?: false
         tunnelingEnabled = PlayerSettingsStorage.loadTunnelingEnabled() ?: false
+        audioPassthroughEnabled = PlayerSettingsStorage.loadAudioPassthroughEnabled() ?: false
         exoNativeMemoryEnabled = (PlayerSettingsStorage.loadExoNativeMemoryEnabled() ?: false) &&
             isExoNativeMemorySupported()
         vodCacheEnabled = PlayerSettingsStorage.loadVodCacheEnabled() ?: false
@@ -715,6 +719,14 @@ object PlayerSettingsRepository {
         tunnelingEnabled = enabled
         publish()
         PlayerSettingsStorage.saveTunnelingEnabled(enabled)
+    }
+
+    fun setAudioPassthroughEnabled(enabled: Boolean) {
+        ensureLoaded()
+        if (audioPassthroughEnabled == enabled) return
+        audioPassthroughEnabled = enabled
+        publish()
+        PlayerSettingsStorage.saveAudioPassthroughEnabled(enabled)
     }
 
     fun setExoNativeMemoryEnabled(enabled: Boolean) {
@@ -1314,6 +1326,7 @@ object PlayerSettingsRepository {
             decoderPriority = decoderPriority,
             mapDV7ToHevc = mapDV7ToHevc,
             tunnelingEnabled = tunnelingEnabled,
+            audioPassthroughEnabled = audioPassthroughEnabled,
             exoNativeMemoryEnabled = exoNativeMemoryEnabled,
             bufferEngineEnabled = bufferEngineEnabled,
             minBufferMs = minBufferMs,

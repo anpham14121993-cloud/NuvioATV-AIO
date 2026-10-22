@@ -360,6 +360,8 @@
     <string name="compose_auth_link_signing_in">Signing in…</string>
     <string name="compose_auth_link_try_again">Try Again</string>
     <string name="compose_auth_link_waiting">Waiting for approval…</string>
+    <string name="compose_auth_link_scan_qr">Sign-in QR code</string>
+    <string name="compose_auth_link_scan_qr_hint">Scan this code with the Nuvio app on your phone to approve sign-in</string>
     <string name="compose_auth_or_separator">  or  </string>
     <string name="compose_auth_password">Password</string>
     <string name="compose_auth_sign_in_subtitle">Sign in to access your library and progress</string>
@@ -1231,6 +1233,9 @@
     <string name="settings_playback_timeout_seconds">%1$ss</string>
     <string name="settings_playback_timeout_unlimited">Unlimited</string>
     <string name="settings_playback_tunneled_playback">Tunneled Playback</string>
+    <string name="settings_playback_audio_passthrough">Surround passthrough</string>
+    <string name="settings_playback_audio_passthrough_description">Send Dolby Digital / Dolby Digital Plus to the TV as a bitstream (%1$s). Needs an AVR or TV with passthrough support; the film volume cannot be lowered while narrating.</string>
+    <string name="settings_playback_audio_passthrough_unsupported">This device does not report passthrough support, so the audio stays decoded.</string>
     <string name="settings_playback_tunneled_playback_description">Hardware-level audio/video sync. May improve playback on some Android TV devices</string>
     <string name="settings_playback_exo_native_memory">ExoPlayer Native Memory</string>
     <string name="settings_playback_exo_native_memory_description">Keep playback buffers in native memory instead of the Java heap, so large files can buffer further without memory pressure.</string>

@@ -1,6 +1,7 @@
 package com.nuvio.app
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.tooling.preview.Preview
@@ -12,7 +13,9 @@ import coil3.request.CachePolicy
 import coil3.request.crossfade
 import coil3.svg.SvgDecoder
 import com.nuvio.app.core.poster.CustomPosterFallbackInterceptor
+import com.nuvio.app.core.ui.LocalDeviceType
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
+import com.nuvio.app.core.ui.detectDeviceType
 import com.nuvio.app.core.ui.NuvioTheme
 import com.nuvio.app.core.ui.configurePlatformImageLoader
 import com.nuvio.app.core.ui.platformProvidesImageLoader
@@ -99,7 +102,11 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
 
     val customThemeColors by ThemeSettingsRepository.customThemeColors.collectAsStateWithLifecycle()
 
+    val deviceType = remember { detectDeviceType() }
+
     NuvioTheme(appTheme = selectedTheme, amoled = amoledEnabled, customThemeColors = customThemeColors) {
-        content()
+        CompositionLocalProvider(LocalDeviceType provides deviceType) {
+            content()
+        }
     }
 }
