@@ -160,6 +160,7 @@ private fun PlaybackSectionContent(
         PlaybackSection.VIDEO -> PlaybackVideoSection(playerSettings, transparentLetterbox, onUpdate, onOpenDialog)
         PlaybackSection.BUFFER_NETWORK -> PlaybackBufferNetworkSection(playerSettings, onUpdate, onMemorySettingChanged)
         PlaybackSection.P2P -> PlaybackP2pSection(p2p, onUpdate, onOpenDialog, onClearTorrentCache)
+        PlaybackSection.NARRATION -> PlaybackNarrationSection(playerSettings, onUpdate)
     }
 }
 

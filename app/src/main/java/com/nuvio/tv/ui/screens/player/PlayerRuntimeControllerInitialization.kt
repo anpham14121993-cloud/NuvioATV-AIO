@@ -1308,6 +1308,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                 Log.i(PlayerRuntimeController.TAG, "Learned audio rejections reset")
                 playerSettings.copy(audioRejectionsSeen = emptySet(), audioRejectionsConfirmed = emptySet())
                     .also { currentPlayerSettingsForReport = it }
+                    .also { applyNarrationSettings(it) }
             } else {
                 playerSettings
             }
@@ -1429,6 +1430,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                 mapDv7ToHevc = mapDv7ToHevcEnabled,
                 onPlaybackSpeedAwareAudioSinkCreated = { playbackSpeedAwareAudioSink = it },
                 onAudioDiagnosticEvent = { line -> queuePlaybackRawEventLine(line) },
+                onCueText = { text -> narration()?.onCueText(text) },
                 onFfmpegAudioRendererChanged = { renderer ->
                     ffmpegAudioRenderer = renderer
                     renderer?.applyDownmixSettings(
@@ -3220,6 +3222,7 @@ private class SubtitleOffsetRenderersFactory(
     private val shouldStripSdhProvider: () -> Boolean,
     private val isBuiltInSubtitleProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean = { false },
+    private val onCueText: (String) -> Unit = {},
     private val videoBoundsFractionProvider: () -> RectF?,
     private val gainAudioProcessor: GainAudioProcessor,
     private val downmixEnabled: Boolean,
@@ -3475,6 +3478,7 @@ private class SubtitleOffsetRenderersFactory(
         out: ArrayList<Renderer>
     ) {
         val normalizingOutput = CueNormalizingTextOutput(
+            onCueText = onCueText,
             delegate = SdhFilteringTextOutput(output, shouldStripSdhProvider),
             shouldNormalizeCuePositionProvider = shouldNormalizeCuePositionProvider,
             presentCue = presentCue,
@@ -3529,6 +3533,7 @@ internal fun FfmpegAudioRenderer.applyDownmixSettings(
 }
 
 private class CueNormalizingTextOutput(
+    private val onCueText: (String) -> Unit,
     private val delegate: TextOutput,
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val presentCue: (Cue) -> Cue,
@@ -3565,6 +3570,10 @@ private class CueNormalizingTextOutput(
         }
         val processedCues = modifiedList ?: cues
         val mergedCues = PlayerSubtitleUtils.mergeOverlappingCues(processedCues)
+        if (mergedCues.isNotEmpty()) {
+            val text = mergedCues.joinToString(" ") { it.text.toString() }.trim()
+            if (text.isNotEmpty()) onCueText(text)
+        }
         delegate.onCues(CueGroup(mergedCues, cueGroup.presentationTimeUs))
     }
 

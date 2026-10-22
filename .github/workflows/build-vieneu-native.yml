@@ -1,0 +1,98 @@
+name: Build VieNeu native libs
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  native:
+    name: Build G2P native libraries
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SEA_G2P_REPO: https://github.com/pnnbao97/sea-g2p.git
+      SEA_G2P_COMMIT: e825173f235d08ea19315b2b279fb11153b44cea
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Locate Android NDK
+        run: |
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}"
+          ls "${ANDROID_NDK_ROOT}" || {
+            echo "No NDK found on the runner" >&2
+            exit 1
+          }
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Check out sea-g2p
+        run: |
+          git clone "${SEA_G2P_REPO}" "${RUNNER_TEMP}/sea-g2p"
+          git -C "${RUNNER_TEMP}/sea-g2p" checkout "${SEA_G2P_COMMIT}"
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${RUNNER_TEMP}/sea-g2p/target
+          key: rust-android-${{ hashFiles('/dev/null') }}-${{ env.SEA_G2P_COMMIT }}
+          restore-keys: |
+            rust-android-
+
+      - name: Build sea_g2p_rs for both ABIs
+        run: |
+          cd "${RUNNER_TEMP}/sea-g2p"
+          RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
+            cargo ndk -t arm64-v8a -o ./target/android build --release --no-default-features --features capi
+          RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=4096" \
+            cargo ndk -t armeabi-v7a -o ./target/android build --release --no-default-features --features capi
+
+      - name: Build the JNI bridge
+        run: |
+          cd "${GITHUB_WORKSPACE}/tts/src/main/cpp"
+          cc="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for abi in arm64-v8a armeabi-v7a; do
+            page_size=4096
+            target="armv7a-linux-androideabi24"
+            if [[ "${abi}" == "arm64-v8a" ]]; then
+              page_size=16384
+              target="aarch64-linux-android24"
+            fi
+            "${cc}/clang" \
+              --target="${target}" \
+              -shared -fPIC -O2 \
+              "-Wl,-z,max-page-size=${page_size}" \
+              -o "libg2pjni-${abi}.so" \
+              g2p_jni.c \
+              -I. \
+              -L"${RUNNER_TEMP}/sea-g2p/target/android/${abi}" \
+              -lsea_g2p_rs
+          done
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist/arm64-v8a dist/armeabi-v7a
+          cp "${RUNNER_TEMP}/sea-g2p/target/aarch64-linux-android/release/libsea_g2p_rs.so" dist/arm64-v8a/
+          cp "${RUNNER_TEMP}/sea-g2p/target/armv7-linux-androideabi/release/libsea_g2p_rs.so" dist/armeabi-v7a/
+          cpp="${GITHUB_WORKSPACE}/tts/src/main/cpp"
+          cp "${cpp}/libg2pjni-arm64-v8a.so" dist/arm64-v8a/libg2pjni.so
+          cp "${cpp}/libg2pjni-armeabi-v7a.so" dist/armeabi-v7a/libg2pjni.so
+          file dist/*/*.so || true
+          ls -lh dist/arm64-v8a dist/armeabi-v7a
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: vieneu-native
+          path: dist/
+          if-no-files-found: error

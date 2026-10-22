@@ -157,9 +157,9 @@ android {
         buildConfigField("String", "SPONSOR_NAMES", buildConfigString(sponsorNames))
 
         // One beta stream for this fork, including GitHub prereleases.
-        buildConfigField("String", "GITHUB_OWNER", "\"ysosrs123\"")
-        buildConfigField("String", "GITHUB_REPO", "\"NuvioTV-Fork\"")
-        buildConfigField("String", "GITHUB_REPO_NEW_NAME", "\"Nuvio-Arc\"")
+        buildConfigField("String", "GITHUB_OWNER", "\"anpham14121993-cloud\"")
+        buildConfigField("String", "GITHUB_REPO", "\"NuvioATV-AIO\"")
+        buildConfigField("String", "GITHUB_REPO_NEW_NAME", "\"NuvioATV-AIO\"")
         buildConfigField("boolean", "UPDATE_CHECK_ENABLED", "true")
     }
 
@@ -466,6 +466,8 @@ dependencies {
         "libs/lib-decoder-av1-release.aar"
     ))
     implementation(files("libs/lib-nuvio-engine-android-0.1.5.aar"))
+    // Offline Vietnamese narration engine (VieNeu TTS, bundled ONNX int8 models).
+    implementation(project(":tts"))
     if (useLocalFfmpegDecoder) {
         implementation(project(":ffmpeg-decoder-downmix"))
     } else {

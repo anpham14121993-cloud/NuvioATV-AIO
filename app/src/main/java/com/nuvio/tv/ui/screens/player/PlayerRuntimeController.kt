@@ -489,6 +489,27 @@ class PlayerRuntimeController(
     @Volatile internal var nextEpisodeThumbsFailedFor: String? = null
     val exoPlayer: ExoPlayer?
         get() = _exoPlayer
+
+    /**
+     * Offline Vietnamese narration (VieNeu TTS). Created lazily so the ONNX
+     * models are only extracted when the feature is actually used.
+     */
+    @Volatile
+    internal var narrationController: com.nuvio.tv.core.player.tts.NarrationController? = null
+
+    internal fun narration(): com.nuvio.tv.core.player.tts.NarrationController? {
+        if (narrationController == null) {
+            synchronized(this) {
+                if (narrationController == null) {
+                    narrationController = com.nuvio.tv.core.player.tts.NarrationController(
+                        context = context.applicationContext,
+                        playerProvider = { _exoPlayer },
+                    )
+                }
+            }
+        }
+        return narrationController
+    }
     @Volatile var videoAspectRatio: Float = 0f
     @Volatile var exoPlayerView: androidx.media3.ui.PlayerView? = null
     val videoBottomFractionState = mutableStateOf<Float?>(null)

@@ -35,7 +35,8 @@ internal enum class PlaybackSection(
     SUBTITLES(R.string.playback_section_subtitles, R.string.playback_section_subtitles_desc, Icons.Default.Subtitles),
     VIDEO(R.string.video_section, R.string.playback_section_video_desc, Icons.Default.VideoSettings),
     BUFFER_NETWORK(R.string.playback_section_buffer_network, R.string.playback_section_buffer_network_desc, Icons.Default.NetworkCheck),
-    P2P(R.string.settings_p2p_title, R.string.settings_p2p_subtitle, Icons.Default.Hub)
+    P2P(R.string.settings_p2p_title, R.string.settings_p2p_subtitle, Icons.Default.Hub),
+    NARRATION(R.string.playback_section_narration_title, R.string.playback_section_narration_desc, Icons.Default.RecordVoiceOver)
 }
 
 internal fun visiblePlaybackSections(settings: PlayerSettings): List<PlaybackSection> =

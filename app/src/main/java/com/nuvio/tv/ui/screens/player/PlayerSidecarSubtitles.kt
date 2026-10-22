@@ -268,6 +268,11 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     val sanitized = active.map { SubtitleMojibakeSanitizer.sanitizeCue(it) }
     val filtered = if (stripSdh) SubtitleSdhFilter.filterCues(sanitized) else sanitized
     val merged = PlayerSubtitleUtils.mergeOverlappingCues(filtered)
+    if (merged.isNotEmpty()) {
+        // Narrate the sidecar line as well; it never reaches ExoPlayer's onCues.
+        val text = merged.joinToString(" ") { it.text.toString() }.trim()
+        if (text.isNotEmpty()) narration()?.onCueText(text)
+    }
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return
     postToSubtitleView { view ->

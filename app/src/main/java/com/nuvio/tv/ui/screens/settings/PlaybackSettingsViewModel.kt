@@ -609,6 +609,22 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setPostPlayMovieThresholdPercent(percent)
     }
 
+    suspend fun setTtsNarrationEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setTtsNarrationEnabled(enabled)
+    }
+
+    suspend fun setTtsNarrationVolume(volume: Int) {
+        playerSettingsDataStore.setTtsNarrationVolume(volume)
+    }
+
+    suspend fun setTtsNarrationVoice(voice: String) {
+        playerSettingsDataStore.setTtsNarrationVoice(voice)
+    }
+
+    suspend fun setTtsDuckVolume(volume: Int) {
+        playerSettingsDataStore.setTtsDuckVolume(volume)
+    }
+
     suspend fun setStreamAutoPlayNextEpisodeEnabled(enabled: Boolean) {
         playerSettingsDataStore.setStreamAutoPlayNextEpisodeEnabled(enabled)
     }

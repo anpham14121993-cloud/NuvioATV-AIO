@@ -30,6 +30,9 @@ internal fun PlayerRuntimeController.releasePlayer(
         flushPlaybackSnapshotForSwitchOrExit()
     }
 
+    runCatching { narrationController?.release() }
+    narrationController = null
+
     notifyAudioSessionUpdate(false)
     unregisterAudioDelayRouteCallback()
     audioRouteChangeJob?.cancel()

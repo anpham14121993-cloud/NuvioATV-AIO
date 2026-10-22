@@ -25,7 +25,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  vieneu-native:
+    name: Build VieNeu native libraries
+    if: inputs.mode != 'dry-run'
+    uses: ./.github/workflows/build-vieneu-native.yml
+
   release:
+    needs:
+      - vieneu-native
     name: ${{ inputs.mode }} Android TV release
     runs-on: ubuntu-latest
     env:
@@ -36,6 +43,8 @@ jobs:
       RELEASE_KEY_ALIAS: ${{ secrets.NUVIO_RELEASE_KEY_ALIAS }}
       RELEASE_KEY_PASSWORD: ${{ secrets.NUVIO_RELEASE_KEY_PASSWORD }}
       RELEASE_STORE_PASSWORD: ${{ secrets.NUVIO_RELEASE_STORE_PASSWORD }}
+      VIENUE_MODELS_RELEASE_TAG: models-v1
+      VIENUE_MODELS_ASSET: vieneu-models.tar.gz
 
     steps:
       - name: Check out full history
@@ -221,6 +230,35 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Download bundled VieNeu TTS models
+        if: inputs.mode != 'dry-run'
+        run: |
+          mkdir -p "${RUNNER_TEMP}/models" app/src/main/assets
+          gh release download "${VIENUE_MODELS_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${VIENUE_MODELS_ASSET}" \
+            --dir "${RUNNER_TEMP}/models" \
+            --clobber
+          tar -xzf "${RUNNER_TEMP}/models/${VIENUE_MODELS_ASSET}" -C app/src/main/assets
+          ls -lh app/src/main/assets
+
+      - name: Download VieNeu native libraries
+        if: inputs.mode != 'dry-run'
+        uses: actions/download-artifact@v8
+        with:
+          name: vieneu-native
+          path: native-libs
+
+      - name: Place VieNeu native libraries
+        if: inputs.mode != 'dry-run'
+        run: |
+          for abi in arm64-v8a armeabi-v7a; do
+            mkdir -p "tts/src/main/jniLibs/${abi}"
+            cp "native-libs/${abi}/libsea_g2p_rs.so" "tts/src/main/jniLibs/${abi}/"
+            cp "native-libs/${abi}/libg2pjni.so" "tts/src/main/jniLibs/${abi}/"
+          done
+          ls -lh tts/src/main/jniLibs/*/
 
       - name: Test updater and build full release APKs
         if: inputs.mode != 'dry-run'

@@ -323,6 +323,11 @@ data class PlayerSettings(
     val postPlayRecommendationsEnabled: Boolean = false,
     val postPlayMovieThresholdPercent: Int = DEFAULT_POST_PLAY_MOVIE_THRESHOLD_PERCENT,
     val streamAutoPlayNextEpisodeEnabled: Boolean = false,
+    /** Offline Vietnamese narration (VieNeu TTS) for the current subtitle line. */
+    val ttsNarrationEnabled: Boolean = false,
+    val ttsNarrationVolume: Int = 90,
+    val ttsNarrationVoice: String = "Thùy Dung",
+    val ttsDuckVolume: Int = 50,
     val streamAutoPlayNextEpisodeFallbackEnabled: Boolean = true,
     val streamAutoPlayPreferBingeGroupForNextEpisode: Boolean = true,
     val streamAutoPlayReuseBingeGroup: Boolean = false,
@@ -726,6 +731,10 @@ class PlayerSettingsDataStore @Inject constructor(
     private val postPlayRecommendationsEnabledKey = booleanPreferencesKey("post_play_recommendations_enabled")
     private val postPlayMovieThresholdPercentKey = intPreferencesKey("post_play_movie_threshold_percent")
     private val streamAutoPlayNextEpisodeEnabledKey = booleanPreferencesKey("stream_auto_play_next_episode_enabled")
+    private val ttsNarrationEnabledKey = booleanPreferencesKey("tts_narration_enabled")
+    private val ttsNarrationVolumeKey = intPreferencesKey("tts_narration_volume")
+    private val ttsNarrationVoiceKey = stringPreferencesKey("tts_narration_voice")
+    private val ttsDuckVolumeKey = intPreferencesKey("tts_duck_volume")
     private val streamAutoPlayNextEpisodeFallbackEnabledKey = booleanPreferencesKey("stream_auto_play_next_episode_fallback_enabled")
     private val streamAutoPlayPreferBingeGroupForNextEpisodeKey = booleanPreferencesKey("stream_auto_play_prefer_bingegroup_next_episode")
     private val streamAutoPlayReuseBingeGroupKey = booleanPreferencesKey("stream_auto_play_reuse_binge_group")
@@ -1229,6 +1238,10 @@ class PlayerSettingsDataStore @Inject constructor(
                     PlayerSettings.MAX_POST_PLAY_MOVIE_THRESHOLD_PERCENT
                 ),
                 streamAutoPlayNextEpisodeEnabled = prefs[streamAutoPlayNextEpisodeEnabledKey] ?: false,
+                ttsNarrationEnabled = prefs[ttsNarrationEnabledKey] ?: false,
+                ttsNarrationVolume = prefs[ttsNarrationVolumeKey] ?: 90,
+                ttsNarrationVoice = prefs[ttsNarrationVoiceKey] ?: "Thùy Dung",
+                ttsDuckVolume = prefs[ttsDuckVolumeKey] ?: 50,
                 streamAutoPlayNextEpisodeFallbackEnabled = prefs[streamAutoPlayNextEpisodeFallbackEnabledKey] ?: true,
                 streamAutoPlayPreferBingeGroupForNextEpisode =
                     prefs[streamAutoPlayPreferBingeGroupForNextEpisodeKey] ?: true,
@@ -1847,6 +1860,22 @@ class PlayerSettingsDataStore @Inject constructor(
         store().edit { prefs ->
             prefs[streamAutoPlayNextEpisodeEnabledKey] = enabled
         }
+    }
+
+    suspend fun setTtsNarrationEnabled(enabled: Boolean) {
+        store().edit { prefs -> prefs[ttsNarrationEnabledKey] = enabled }
+    }
+
+    suspend fun setTtsNarrationVolume(volume: Int) {
+        store().edit { prefs -> prefs[ttsNarrationVolumeKey] = volume.coerceIn(0, 100) }
+    }
+
+    suspend fun setTtsNarrationVoice(voice: String) {
+        store().edit { prefs -> prefs[ttsNarrationVoiceKey] = voice }
+    }
+
+    suspend fun setTtsDuckVolume(volume: Int) {
+        store().edit { prefs -> prefs[ttsDuckVolumeKey] = volume.coerceIn(0, 100) }
     }
 
     suspend fun setStreamAutoPlayNextEpisodeFallbackEnabled(enabled: Boolean) {

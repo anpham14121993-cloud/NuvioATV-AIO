@@ -4089,4 +4089,14 @@
     <string name="detail_episode_synopsis_none">Tập phim này chưa có tóm tắt.</string>
     <string name="player_track_role_commentary">Bình luận</string>
     <string name="player_track_role_audio_description">Mô tả âm thanh</string>
+    <string name="playback_section_narration_title">Thuyết minh</string>
+    <string name="playback_section_narration_desc">Đọc phụ đề bằng giọng Việt ngoại tuyến.</string>
+    <string name="playback_narration_info">Thuyết minh tiếng Việt ngoại tuyến (VieNeu TTS). Dò phụ đề đang hiện sẽ được đọc to, đồng thời tiếng phim được hạ nhỏ.</string>
+    <string name="playback_narration_enabled">Đọc phụ đề thành tiếng</string>
+    <string name="playback_narration_enabled_sub">Đọc dò phụ đề hiện tại bằng giọng Việt ngoại tuyến có sẵn.</string>
+    <string name="playback_narration_volume">Âm lượng thuyết minh</string>
+    <string name="playback_narration_volume_sub">Độ lớn của giọng thuyết minh.</string>
+    <string name="playback_narration_duck">Âm lượng phim khi thuyết minh</string>
+    <string name="playback_narration_duck_sub">Phim bị hạ nhỏ tới mức nào khi đang thuyết minh.</string>
+    <string name="playback_narration_voice">Giọng thuyết minh</string>
 </resources>

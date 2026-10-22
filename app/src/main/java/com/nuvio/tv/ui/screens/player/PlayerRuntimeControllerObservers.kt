@@ -364,6 +364,7 @@ internal fun PlayerRuntimeController.observeSubtitleSettings() {
         playerSettingsDataStore.runtimePlayerSettings
             .onEach { snapshot ->
                 currentPlayerSettingsForReport = snapshot.settings
+                applyNarrationSettings(snapshot.settings)
                 _uiState.update { it.copy(controlLayout = snapshot.settings.controlLayout) }
             }
             .playbackSettingsChanges()
