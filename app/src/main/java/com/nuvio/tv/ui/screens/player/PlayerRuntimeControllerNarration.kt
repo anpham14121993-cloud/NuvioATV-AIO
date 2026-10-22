@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.player
 
 import android.util.Log
 import com.nuvio.tv.data.local.NarrationSubtitleMode
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
