@@ -33,7 +33,7 @@ internal class NoChannelReleaseException : IllegalStateException()
 
 internal object AppUpdaterRepository {
     private const val REPO_OWNER = "anpham14121993-cloud"
-    private const val REPO_NAME = "NuvioMobile-AIO"
+    private const val REPO_NAME = "NuvioATV-AIO"
 
     private val json = Json {
         ignoreUnknownKeys = true
