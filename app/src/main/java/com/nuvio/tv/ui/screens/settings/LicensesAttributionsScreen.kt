@@ -65,7 +65,7 @@ import com.nuvio.tv.core.cloud.PremiumizeCloudLibraryPosterUrl
 import com.nuvio.tv.core.cloud.TorboxCloudLibraryPosterUrl
 import com.nuvio.tv.core.cloud.cloudLibraryDisplayArtworkUrl
 
-private const val NuvioRepositoryUrl = "https://github.com/ysosrs123/NuvioTV-Fork"
+private const val NuvioRepositoryUrl = "https://github.com/anpham14121993-cloud/NuvioATV-AIO"
 private const val TmdbUrl = "https://www.themoviedb.org"
 private const val TraktUrl = "https://trakt.tv"
 private const val TvMazeUrl = "https://www.tvmaze.com"
