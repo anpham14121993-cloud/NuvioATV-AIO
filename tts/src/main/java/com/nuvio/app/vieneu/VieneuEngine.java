@@ -66,6 +66,11 @@ public final class VieneuEngine {
         OrtSession.SessionOptions o = new OrtSession.SessionOptions();
         o.setIntraOpNumThreads(Math.max(1, threads));
         o.setInterOpNumThreads(1);
+        // Weak TV boxes run out of memory long before the weights fit: keep the
+        // allocator small instead of letting ORT reserve big arenas.
+        o.setMemoryPatternOptimization(false);
+        o.setCPUArenaAllocator(false);
+        o.addConfigEntry("session.use_device_allocator_for_initializers", "1");
         File onnx = new File(modelDir, "onnx_int8");
         File codec = new File(modelDir, "codec");
         sPre = env.createSession(new File(onnx, "vieneu_prefill.onnx").getAbsolutePath(), o);

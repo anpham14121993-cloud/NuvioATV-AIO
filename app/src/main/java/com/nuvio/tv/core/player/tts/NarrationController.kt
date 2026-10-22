@@ -1,18 +1,29 @@
 package com.nuvio.tv.core.player.tts
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
+import android.os.Message
+import android.os.Messenger
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Narrates the currently displayed subtitle line with the bundled offline
  * VieNeu engine and ducks the movie audio while speaking.
+ *
+ * The engine lives in [NarrationTtsService], a separate process: the ONNX
+ * runtime and the G2P native library can abort a process on weak TV boxes,
+ * and the player must survive that.
  *
  * The movie volume is changed through [ExoPlayer.setVolume] (not an audio
  * processor) so ducking also works when the audio is sent to the amplifier as
@@ -25,19 +36,16 @@ class NarrationController(
 ) {
 
     /** Load progress of the offline model, so the UI can explain a silent narration. */
-    val status = kotlinx.coroutines.flow.MutableStateFlow(NarrationEngineStatus.LOADING)
+    val status = MutableStateFlow(NarrationEngineStatus.LOADING)
 
     /** The last subtitle line the narration received, for the in-player diagnostics. */
-    val lastCue = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val lastCue = MutableStateFlow<String?>(null)
 
     /** The last failure of the engine or of a synthesis, for the diagnostics. */
-    val lastError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val lastError = MutableStateFlow<String?>(null)
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "nuvio-vieneu-tts").apply { isDaemon = true }
-    }
 
     @Volatile
     private var enabled = false
@@ -54,15 +62,98 @@ class NarrationController(
     @Volatile
     private var released = false
 
-    private val engineLock = Any()
-    private var engine: NarrationTtsEngine? = null
-    private val engineReady = AtomicBoolean(false)
-
     private val speaking = AtomicBoolean(false)
     private var lastSpokenText: String? = null
     private var lastCueAtMs = 0L
     private var cueIntervalEmaMs = 0f
     private var fadeGeneration = 0
+
+    // ── service connection ────────────────────────────────────────────────────
+
+    @Volatile
+    private var serviceMessenger: Messenger? = null
+
+    @Volatile
+    private var bound = false
+
+    /** A line that arrived before the service was connected. */
+    @Volatile
+    private var pendingLine: Pair<String, Int>? = null
+
+    /** The service died this often; a repeated death must not become a crash loop. */
+    @Volatile
+    private var serviceFailures = 0
+
+    /** Set when the engine process keeps dying, so the narration stops retrying. */
+    @Volatile
+    private var serviceDisabled = false
+
+    private val clientMessenger = Messenger(object : Messenger.Handler(mainHandler) {
+        override fun handleMessage(msg: Message) {
+            when (msg.what) {
+                NarrationTtsService.MSG_READY -> {
+                    serviceMessenger?.let { messenger ->
+                        messenger.send(Message.obtain(null, NarrationTtsService.MSG_WARMUP))
+                        val volume = Message.obtain(null, NarrationTtsService.MSG_SET_VOLUME)
+                        volume.data = Bundle().apply {
+                            putFloat(NarrationTtsService.ARG_VOLUME, narrationVolume)
+                        }
+                        messenger.send(volume)
+                    }
+                    pendingLine?.let { (text, rate) ->
+                        pendingLine = null
+                        sendSpeak(text, rate, null)
+                    }
+                }
+                NarrationTtsService.MSG_STATUS -> {
+                    val state = msg.data?.getString(NarrationTtsService.ARG_STATE)
+                    status.value = runCatching { NarrationEngineStatus.valueOf(state.orEmpty()) }
+                        .getOrDefault(NarrationEngineStatus.LOADING)
+                }
+                NarrationTtsService.MSG_SPEECH_START -> {
+                    speaking.set(true)
+                    duckPlayer()
+                }
+                NarrationTtsService.MSG_SPEECH_END -> {
+                    speaking.set(false)
+                    unduckPlayer()
+                }
+                NarrationTtsService.MSG_ERROR -> {
+                    val detail = msg.data?.getString(NarrationTtsService.ARG_DETAIL).orEmpty()
+                    Log.w(TAG, "narration error: $detail")
+                    lastError.value = detail
+                }
+                NarrationTtsService.MSG_RELEASED -> {
+                    serviceMessenger = null
+                }
+            }
+        }
+    })
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            bound = true
+            serviceDisabled = false
+            val messenger = Messenger(binder)
+            serviceMessenger = messenger
+            val hello = Message.obtain(null, NarrationTtsService.MSG_HELLO)
+            hello.replyTo = clientMessenger
+            runCatching { messenger.send(hello) }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            bound = false
+            serviceMessenger = null
+            serviceFailures++
+            status.value = NarrationEngineStatus.FAILED
+            lastError.value = "service: died ${serviceFailures}x"
+            if (serviceFailures >= 2) {
+                // The engine process keeps crashing on this device: stop the loop.
+                serviceDisabled = true
+                Log.w(TAG, "narration service died ${serviceFailures} times, giving up")
+            }
+        }
+    }
 
     // ── configuration ────────────────────────────────────────────────────────
 
@@ -82,12 +173,15 @@ class NarrationController(
     /** Starts loading the offline model without waiting for the first cue. */
     fun warmUp() {
         if (released) return
-        runCatching { engineOrCreate() }
+        connect()
+        serviceMessenger?.send(Message.obtain(null, NarrationTtsService.MSG_WARMUP))
     }
 
     fun setVolumePercent(volumePercent: Int) {
         narrationVolume = (volumePercent.coerceIn(0, 100)) / 100f
-        engine?.setNarrationVolume(narrationVolume)
+        val message = Message.obtain(null, NarrationTtsService.MSG_SET_VOLUME)
+        message.data = Bundle().apply { putFloat(NarrationTtsService.ARG_VOLUME, narrationVolume) }
+        runCatching { serviceMessenger?.send(message) }
     }
 
     fun setDuckLevelPercent(duckPercent: Int) {
@@ -135,52 +229,54 @@ class NarrationController(
         val budgetMs = effectiveWindow?.let { sec ->
             ((sec * 1000f).toLong() - NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
         }
-        speak(text, rateWindowSec = effectiveWindow, budgetMs = budgetMs)
+        val rate = chooseRatePercent(text.length, effectiveWindow)
+        sendSpeak(text, rate, budgetMs)
     }
 
     /** Pre-synthesizes upcoming lines so playback starts instantly. */
     fun prefetch(text: String) {
         if (!enabled || released) return
         val clean = cleanText(text) ?: return
-        worker.execute {
-            runCatching {
-                val e = engineOrCreate() ?: return@runCatching
-                e.prefetch(clean, voice, 0)
-            }.onFailure { Log.w(TAG, "prefetch failed", it) }
+        val message = Message.obtain(null, NarrationTtsService.MSG_PREFETCH)
+        message.data = Bundle().apply {
+            putString(NarrationTtsService.ARG_TEXT, clean)
+            putString(NarrationTtsService.ARG_VOICE, voice)
         }
+        runCatching { serviceMessenger?.send(message) }
     }
 
-    private fun speak(text: String, rateWindowSec: Float?, budgetMs: Long?) {
-        val rate = chooseRatePercent(text.length, rateWindowSec)
-        worker.execute {
-            runCatching {
-                val e = engineOrCreate() ?: return@runCatching
-                e.setNarrationVolume(narrationVolume)
-                e.speak(
-                    text = text,
-                    voiceApiName = voice,
-                    ratePercent = rate,
-                    cutOnNewer = true,
-                    budgetMs = budgetMs,
-                    onResult = { ok, detail ->
-                        mainHandler.post {
-                            if (ok) {
-                                speaking.set(true)
-                                duckPlayer()
-                            } else {
-                                Log.w(TAG, "narration failed: $detail")
-                                lastError.value = "speak: $detail"
-                            }
-                        }
-                    },
-                )
-            }.onFailure { Log.e(TAG, "narration failed", it) }
+    private fun sendSpeak(text: String, rate: Int, budgetMs: Long?) {
+        val messenger = serviceMessenger
+        if (messenger == null) {
+            if (serviceDisabled) return
+            connect()
+            pendingLine = text to rate
+            return
+        }
+        val message = Message.obtain(null, NarrationTtsService.MSG_SPEAK)
+        message.data = Bundle().apply {
+            putString(NarrationTtsService.ARG_TEXT, text)
+            putString(NarrationTtsService.ARG_VOICE, voice)
+            putInt(NarrationTtsService.ARG_RATE, rate)
+            putLong(NarrationTtsService.ARG_BUDGET, budgetMs ?: 0L)
+        }
+        runCatching { messenger.send(message) }
+    }
+
+    private fun connect() {
+        if (released || bound || serviceDisabled) return
+        val intent = Intent(appContext, NarrationTtsService::class.java)
+        runCatching {
+            appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }.onFailure {
+            Log.w(TAG, "could not bind the narration service", it)
+            lastError.value = "service: ${it.javaClass.simpleName}"
         }
     }
 
     fun stopSpeaking() {
         lastSpokenText = null
-        runCatching { engine?.stop() }
+        runCatching { serviceMessenger?.send(Message.obtain(null, NarrationTtsService.MSG_STOP)) }
         speaking.set(false)
         unduckPlayer()
     }
@@ -188,47 +284,12 @@ class NarrationController(
     fun release() {
         released = true
         enabled = false
-        val e = synchronized(engineLock) {
-            val current = engine
-            engine = null
-            current
-        }
-        runCatching { e?.release() }
-        runCatching { worker.shutdownNow() }
-        engineReady.set(false)
+        runCatching { serviceMessenger?.send(Message.obtain(null, NarrationTtsService.MSG_RELEASE)) }
+        runCatching { appContext.unbindService(connection) }
+        serviceMessenger = null
+        bound = false
         speaking.set(false)
         unduckPlayer()
-    }
-
-    // ── engine ───────────────────────────────────────────────────────────────
-
-    private fun engineOrCreate(): NarrationTtsEngine? {
-        engine?.let { return it }
-        synchronized(engineLock) {
-            engine?.let { return it }
-            if (released) return null
-            val created = runCatching {
-                NarrationEngineFactory.create(
-                    context = appContext,
-                    onSpeechStart = { mainHandler.post { speaking.set(true); duckPlayer() } },
-                    onSpeechEnd = { mainHandler.post { speaking.set(false); unduckPlayer() } },
-                    onError = { text, rate ->
-                        Log.w(TAG, "narration error: $text")
-                        lastError.value = text
-                    },
-                    onStatus = { state -> status.value = state },
-                )
-            }.getOrElse { error ->
-                Log.e(TAG, "could not create the narration engine", error)
-                lastError.value = "engine: ${error.javaClass.simpleName}"
-                null
-            }
-            engine = created
-            created?.setNarrationVolume(narrationVolume)
-            runCatching { created?.warmUp() }
-            engineReady.set(created != null)
-            return created
-        }
     }
 
     // ── ducking ──────────────────────────────────────────────────────────────
@@ -283,9 +344,9 @@ class NarrationController(
     }
 
     /** Strips markup and collapses whitespace; null when nothing is left. */
-    private fun cleanText(raw: String?): String? {
-        if (raw.isNullOrBlank()) return null
-        var text = raw.replace(Regex("<[^>]*>"), " ")
+    private fun cleanText(rawText: String?): String? {
+        if (rawText.isNullOrBlank()) return null
+        var text = rawText.replace(Regex("<[^>]*>"), " ")
         text = text.replace("&nbsp;", " ")
             .replace("&amp;", "&")
             .replace("&lt;", "<")
@@ -320,7 +381,7 @@ class NarrationController(
                 block == Character.UnicodeBlock.KATAKANA ||
                 block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
                 block == Character.UnicodeBlock.HANGUL_JAMO ||
-                block == Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
+                block == Character.UnicodeBlock.HANGUL_COMPATIBLE_JAMO
             ) {
                 return true
             }
@@ -343,7 +404,7 @@ class NarrationController(
         val VIETNAMESE_MARKS = charArrayOf(
             '̀', '́', '̃', '̄', '̉', '̣',
             '̌', '̂', '̃', '̰', '̱', '̆', '̊', '̋', '̐',
-            '̀', '́', '͂', '̓', 'ͅ', '͆', '͇', '̀',
+            '̀', '́', '͂', '̓', 'ͅ', '͆', '͇', '̀',
         )
     }
 }
