@@ -41,6 +41,8 @@ internal fun PlayerNarrationDialog(
     narrationEnabled: Boolean,
     subtitleMode: String,
     engineStatus: NarrationEngineStatus = NarrationEngineStatus.LOADING,
+    lastCue: String? = null,
+    lastError: String? = null,
     onEnable: (String) -> Unit,
     onDisable: () -> Unit,
     onDismiss: () -> Unit,
@@ -61,6 +63,11 @@ internal fun PlayerNarrationDialog(
         NarrationEngineStatus.READY -> stringResource(R.string.player_narration_status_ready)
         NarrationEngineStatus.FAILED -> stringResource(R.string.player_narration_status_failed)
     }
+    val cueText = lastCue?.takeIf { it.isNotBlank() }
+        ?.let { stringResource(R.string.player_narration_last_cue, it) }
+        ?: stringResource(R.string.player_narration_no_cue)
+    val errorText = lastError?.takeIf { it.isNotBlank() }
+        ?.let { stringResource(R.string.player_narration_last_error, it) }
 
     LaunchedEffect(narrationEnabled) {
         if (!v2) {
@@ -84,8 +91,20 @@ internal fun PlayerNarrationDialog(
             Text(
                 statusText,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = .55f), modifier = Modifier.padding(bottom = 16.dp)
+                color = Color.White.copy(alpha = .55f), modifier = Modifier.padding(bottom = 4.dp)
             )
+            Text(
+                cueText,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = .55f), modifier = Modifier.padding(bottom = 4.dp)
+            )
+            if (errorText != null) {
+                Text(
+                    errorText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFFB4A9), modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
             LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item {
                     PlayerPanelRow(
@@ -134,8 +153,22 @@ internal fun PlayerNarrationDialog(
                     text = statusText,
                     style = MaterialTheme.typography.bodySmall,
                     color = NuvioTheme.colors.TextPrimary.copy(alpha = .55f),
-                    modifier = Modifier.padding(bottom = NuvioTheme.spacing.md)
+                    modifier = Modifier.padding(bottom = NuvioTheme.spacing.xs)
                 )
+                Text(
+                    text = cueText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NuvioTheme.colors.TextPrimary.copy(alpha = .55f),
+                    modifier = Modifier.padding(bottom = NuvioTheme.spacing.xs)
+                )
+                if (errorText != null) {
+                    Text(
+                        text = errorText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFFB4A9),
+                        modifier = Modifier.padding(bottom = NuvioTheme.spacing.sm)
+                    )
+                }
                 LazyColumn(
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(4.dp),

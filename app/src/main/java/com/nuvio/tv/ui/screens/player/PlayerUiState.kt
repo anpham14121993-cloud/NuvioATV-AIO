@@ -134,6 +134,10 @@ data class PlayerUiState(
     val showNarrationDialog: Boolean = false,
     val narrationEngineStatus: com.nuvio.tv.core.player.tts.NarrationEngineStatus =
         com.nuvio.tv.core.player.tts.NarrationEngineStatus.LOADING,
+    /** Last subtitle line the narration received; empty when nothing arrived yet. */
+    val narrationLastCue: String? = null,
+    /** Last engine or synthesis failure, shown in the narration dialog. */
+    val narrationLastError: String? = null,
     val dimHdrOverlays: Boolean = false,
     val isHdrVideo: Boolean = false,
     // Subtitle style settings

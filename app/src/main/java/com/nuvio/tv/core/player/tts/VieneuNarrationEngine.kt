@@ -248,6 +248,7 @@ class VieneuNarrationEngine(
                 Log.i(TAG, "engine: load FAIL $loadError")
                 Log.e(TAG, "engine load failed", t)
                 onStatus(NarrationEngineStatus.FAILED)
+                onError("model: $loadError", 0)
             }
             return engine
         }

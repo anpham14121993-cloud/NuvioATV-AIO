@@ -27,6 +27,12 @@ class NarrationController(
     /** Load progress of the offline model, so the UI can explain a silent narration. */
     val status = kotlinx.coroutines.flow.MutableStateFlow(NarrationEngineStatus.LOADING)
 
+    /** The last subtitle line the narration received, for the in-player diagnostics. */
+    val lastCue = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** The last failure of the engine or of a synthesis, for the diagnostics. */
+    val lastError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { runnable ->
@@ -66,7 +72,17 @@ class NarrationController(
         if (!value) {
             stopSpeaking()
             unduckPlayer()
+        } else {
+            // Load the model right away: the first line of a film would otherwise
+            // be lost while the 261 MB of weights are extracted and loaded.
+            warmUp()
         }
+    }
+
+    /** Starts loading the offline model without waiting for the first cue. */
+    fun warmUp() {
+        if (released) return
+        runCatching { engineOrCreate() }
     }
 
     fun setVolumePercent(volumePercent: Int) {
@@ -94,6 +110,7 @@ class NarrationController(
         if (!enabled || released) return
         Log.d(TAG, "cue: ${rawText?.take(60)}")
         val text = cleanText(rawText) ?: return
+        lastCue.value = text
         if (text == lastSpokenText) return
         if (!shouldNarrateText(text)) return
 
@@ -152,6 +169,7 @@ class NarrationController(
                                 duckPlayer()
                             } else {
                                 Log.w(TAG, "narration failed: $detail")
+                                lastError.value = "speak: $detail"
                             }
                         }
                     },
@@ -194,11 +212,15 @@ class NarrationController(
                     context = appContext,
                     onSpeechStart = { mainHandler.post { speaking.set(true); duckPlayer() } },
                     onSpeechEnd = { mainHandler.post { speaking.set(false); unduckPlayer() } },
-                    onError = { text, rate -> Log.w(TAG, "narration error: $text") },
+                    onError = { text, rate ->
+                        Log.w(TAG, "narration error: $text")
+                        lastError.value = text
+                    },
                     onStatus = { state -> status.value = state },
                 )
             }.getOrElse { error ->
                 Log.e(TAG, "could not create the narration engine", error)
+                lastError.value = "engine: ${error.javaClass.simpleName}"
                 null
             }
             engine = created

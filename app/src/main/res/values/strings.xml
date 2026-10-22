@@ -4140,6 +4140,9 @@
     <string name="player_narration_status_loading">Loading the offline voice model, this can take a moment.</string>
     <string name="player_narration_status_ready">The offline voice is ready.</string>
     <string name="player_narration_status_failed">The offline voice model could not be loaded. Free some storage and try again.</string>
+    <string name="player_narration_last_cue">Last subtitle line: %1$s</string>
+    <string name="player_narration_no_cue">No subtitle line has reached the narration yet.</string>
+    <string name="player_narration_last_error">Last error: %1$s</string>
     <string name="playback_narration_info">Offline Vietnamese narration (VieNeu TTS). The subtitle line on screen is read aloud while the movie audio is lowered.</string>
     <string name="playback_narration_enabled">Read subtitles aloud</string>
     <string name="playback_narration_enabled_sub">Speak the current subtitle line with the built-in offline Vietnamese voice.</string>
