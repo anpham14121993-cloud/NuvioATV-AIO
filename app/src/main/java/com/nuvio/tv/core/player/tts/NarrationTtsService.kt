@@ -21,10 +21,10 @@ import android.util.Log
 class NarrationTtsService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var engine: VieneuNarrationEngine? = null
+    private var engine: NarrationTtsEngine? = null
     private var client: Messenger? = null
 
-    private val messenger = Messenger(object : Messenger.Handler(mainHandler) {
+    private val messenger = Messenger(object : Handler(mainHandler) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 MSG_HELLO -> {
@@ -72,7 +72,7 @@ class NarrationTtsService : Service() {
 
     // ── engine ────────────────────────────────────────────────────────────────
 
-    private fun ensureEngine(): VieneuNarrationEngine? {
+    private fun ensureEngine(): NarrationTtsEngine? {
         engine?.let { return it }
         return try {
             val created = NarrationEngineFactory.create(

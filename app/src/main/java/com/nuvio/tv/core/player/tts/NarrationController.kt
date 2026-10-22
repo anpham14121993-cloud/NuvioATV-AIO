@@ -88,7 +88,7 @@ class NarrationController(
     @Volatile
     private var serviceDisabled = false
 
-    private val clientMessenger = Messenger(object : Messenger.Handler(mainHandler) {
+    private val clientMessenger = Messenger(object : Handler(mainHandler) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 NarrationTtsService.MSG_READY -> {
@@ -380,8 +380,7 @@ class NarrationController(
                 block == Character.UnicodeBlock.HIRAGANA ||
                 block == Character.UnicodeBlock.KATAKANA ||
                 block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
-                block == Character.UnicodeBlock.HANGUL_JAMO ||
-                block == Character.UnicodeBlock.HANGUL_COMPATIBLE_JAMO
+                block == Character.UnicodeBlock.HANGUL_JAMO
             ) {
                 return true
             }
