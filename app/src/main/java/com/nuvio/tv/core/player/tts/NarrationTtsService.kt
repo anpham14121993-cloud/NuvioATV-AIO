@@ -24,7 +24,7 @@ class NarrationTtsService : Service() {
     private var engine: NarrationTtsEngine? = null
     private var client: Messenger? = null
 
-    private val messenger = Messenger(object : Handler(mainHandler) {
+    private val messenger = Messenger(object : Handler(mainHandler.looper) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 MSG_HELLO -> {

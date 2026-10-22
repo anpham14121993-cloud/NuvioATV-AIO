@@ -88,7 +88,7 @@ class NarrationController(
     @Volatile
     private var serviceDisabled = false
 
-    private val clientMessenger = Messenger(object : Handler(mainHandler) {
+    private val clientMessenger = Messenger(object : Handler(mainHandler.looper) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 NarrationTtsService.MSG_READY -> {
