@@ -52,7 +52,10 @@ class NarrationController(
         private set
 
     @Volatile
-    var duckLevelPercent = 50
+    var duckLevelPercent: Int = 50
+        set(value) {
+            field = value.coerceIn(0, 100)
+        }
 
     @Volatile
     private var activeSubtitleIsVietnamese = false
@@ -166,10 +169,6 @@ class NarrationController(
         narrationVolume = (volumePercent.coerceIn(0, 100) / 100f).coerceIn(0f, 1f)
         engine?.setNarrationVolume(narrationVolume)
         runCatching { tts?.setSpeechRate(1f) }
-    }
-
-    fun setDuckLevelPercent(duckPercent: Int) {
-        duckLevelPercent = duckPercent.coerceIn(0, 100)
     }
 
     fun setActiveSubtitleIsVietnamese(value: Boolean) {
