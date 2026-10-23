@@ -140,12 +140,15 @@ class NarrationController(
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             bound = true
             serviceDisabled = false
+            stage.value = "bind: connected"
             val messenger = Messenger(binder)
             serviceMessenger = messenger
-            stage.value = "bind: connected"
             val hello = Message.obtain(null, NarrationTtsService.MSG_HELLO)
             hello.replyTo = clientMessenger
-            runCatching { messenger.send(hello) }
+            runCatching { messenger.send(hello) }.onFailure {
+                Log.w(TAG, "hello send failed", it)
+                lastError.value = "service: hello ${it.javaClass.simpleName}"
+            }
         }
 
         override fun onNullBinding(name: ComponentName?) {
@@ -157,6 +160,15 @@ class NarrationController(
 
         override fun onServiceDisconnected(name: ComponentName?) {
             bound = false
+            serviceMessenger = null
+            serviceFailures++
+            status.value = NarrationEngineStatus.FAILED
+            lastError.value = "service: died ${serviceFailures}x"
+            stage.value = "bind: died"
+            if (serviceFailures >= 2) {
+                serviceDisabled = true
+                Log.w(TAG, "narration service died ${serviceFailures} times, giving up")
+            }
             serviceMessenger = null
             serviceFailures++
             status.value = NarrationEngineStatus.FAILED
@@ -319,18 +331,24 @@ class NarrationController(
     }
 
     private fun connect() {
-        if (released || bound || serviceDisabled) return
+        if (released || serviceDisabled) return
+        if (bound) return
+        stage.value = "bind: calling bindService"
         val intent = Intent(appContext, NarrationTtsService::class.java)
-        val started = runCatching {
+        val started = try {
             appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-        }.onFailure {
-            Log.w(TAG, "could not bind the narration service", it)
-            lastError.value = "service: ${it.javaClass.simpleName}"
-        }.getOrDefault(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not bind the narration service", t)
+            lastError.value = "service: ${t.javaClass.simpleName}"
+            false
+        }
         if (!started) {
             Log.w(TAG, "bindService returned false")
-            stage.value = "bind: false"
-            lastError.value = "service: bind refused"
+            stage.value = "bind: returned false"
+            lastError.value = "service: bind returned false"
+        } else {
+            stage.value = "bind: requested"
+            lastError.value = null
         }
     }
 
