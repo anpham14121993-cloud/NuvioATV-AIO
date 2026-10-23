@@ -214,6 +214,7 @@ class NarrationController(
         runCatching { messenger.send(Message.obtain(null, NarrationTtsService.MSG_WARMUP)) }
         mainHandler.postDelayed({
             if (!released && status.value == NarrationEngineStatus.LOADING) {
+                stage.value = "load: still loading"
                 lastError.value = "load: still loading (${stage.value ?: "no step"})"
             }
         }, 120_000L)
