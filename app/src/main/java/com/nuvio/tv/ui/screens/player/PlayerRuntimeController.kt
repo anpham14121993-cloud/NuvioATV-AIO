@@ -505,7 +505,7 @@ class PlayerRuntimeController(
                         appContext = context.applicationContext,
                         playerProvider = { _exoPlayer },
                     )
-                    narrationController.start()
+                    narrationController?.start()
                 }
             }
         }
