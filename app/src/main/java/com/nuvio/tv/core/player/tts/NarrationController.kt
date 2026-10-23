@@ -198,7 +198,7 @@ class NarrationController(
                 cueIntervalEmaMs = if (cueIntervalEmaMs <= 0f) {
                     deltaMs
                 } else {
-                    cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * CUE_INTERVAL_EMA_ALPHA
+                    cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * NarrationController.CUE_INTERVAL_EMA_ALPHA
                 }
             }
         }
@@ -207,7 +207,7 @@ class NarrationController(
             .takeIf { it > 0f }
             ?.let { it / 1000f }
         val budgetMs = effectiveWindow?.let { sec ->
-            ((sec * 1000f).toLong() - NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
+            ((sec * 1000f).toLong() - NarrationController.NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
         }
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
@@ -262,11 +262,11 @@ class NarrationController(
         val fit = if (windowSec == null || windowSec <= 0f) {
             0
         } else {
-            val window = windowSec.coerceAtLeast(MIN_SPEECH_WINDOW_SEC)
-            val estimated = charCount / VI_CHARS_PER_SECOND
+            val window = windowSec?.coerceAtLeast(NarrationController.MIN_SPEECH_WINDOW_SEC) ?: NarrationController.MIN_SPEECH_WINDOW_SEC
+            val estimated = charCount / NarrationController.VI_CHARS_PER_SECOND
             if (estimated <= window) 0 else (((estimated / window) - 1f) * 100f).toInt()
         }
-        return (BASE_RATE_PERCENT + fit).coerceIn(0, MAX_RATE_BUMP_PERCENT) / RATE_STEP * RATE_STEP
+        return (NarrationController.BASE_RATE_PERCENT + fit).coerceIn(0, NarrationController.MAX_RATE_BUMP_PERCENT) / NarrationController.RATE_STEP * NarrationController.RATE_STEP
     }
 
     private fun notifySpeechStart() {
@@ -340,14 +340,14 @@ class NarrationController(
             }
             fun step(index: Int) {
                 if (fadeGeneration.get() != gen) return
-                if (index >= FADE_STEPS) {
+                if (index >= NarrationController.FADE_STEPS) {
                     runCatching { player.volume = clamped }
                     return
                 }
-                val t = (index + 1).toFloat() / FADE_STEPS
+                val t = (index + 1).toFloat() / NarrationController.FADE_STEPS
                 val value = start + (clamped - start) * t
                 runCatching { player.volume = value.coerceIn(0f, 1f) }
-                mainHandler.postDelayed({ step(index + 1) }, FADE_STEP_MS)
+                mainHandler.postDelayed({ step(index + 1) }, NarrationController.FADE_STEP_MS)
             }
             step(0)
         }
@@ -360,7 +360,7 @@ class NarrationController(
             .replace("&", "&")
             .replace("<", "<")
             .replace(">", ">")
-            .replace(""", "\"")
+            .replace("\"", "\"")
             .replace("'", "'")
             .replace(Regex("\\{[^}]*\\}"), " ")
             .replace(Regex("\\\\[Nnh]"), " ")
