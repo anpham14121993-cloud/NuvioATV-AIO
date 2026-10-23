@@ -40,10 +40,6 @@ class NarrationController(
     @Volatile
     var narrationVoice: String = "Thùy Dung"
 
-    fun setNarrationVoice(voiceName: String) {
-        narrationVoice = voiceName
-    }
-
     private val ttsReady = AtomicBoolean(false)
     private val speaking = AtomicBoolean(false)
     private val utteranceSeq = AtomicInteger(0)
