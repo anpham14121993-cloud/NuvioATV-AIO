@@ -61,6 +61,8 @@ class NarrationController(
     @Volatile
     private var activeSubtitleIsVietnamese = false
 
+    private val fadeGeneration = AtomicInteger(0)
+
     @Volatile
     private var lastSpokenText: String? = null
     private var lastCueAtMs = 0L
@@ -185,7 +187,7 @@ class NarrationController(
         val text = cleanText(rawText) ?: return
         lastCue.value = text
         if (text == lastSpokenText) return
-        if (!shouldNarrateText(text)) return
+        if (!NarrationController.shouldNarrateText(text)) return
 
         val now = SystemClock.uptimeMillis()
         val previousCueAt = lastCueAtMs
@@ -196,7 +198,7 @@ class NarrationController(
                 cueIntervalEmaMs = if (cueIntervalEmaMs <= 0f) {
                     deltaMs
                 } else {
-                    cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * CUE_INTERVAL_EMA_ALPHA
+                    cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * NarrationController.CUE_INTERVAL_EMA_ALPHA
                 }
             }
         }
@@ -205,7 +207,7 @@ class NarrationController(
             .takeIf { it > 0f }
             ?.let { it / 1000f }
         val budgetMs = effectiveWindow?.let { sec ->
-            ((sec * 1000f).toLong() - NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
+            ((sec * 1000f).toLong() - NarrationController.NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
         }
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
@@ -228,7 +230,7 @@ class NarrationController(
         budgetMs: Long?,
         cutOnNewer: Boolean,
     ) {
-        val rate = chooseRatePercent(text.length, rateWindowSec)
+        val rate = NarrationController.chooseRatePercent(text.length, rateWindowSec)
         Log.i("NuvioNarration", "speakResolved rate=$rate len=${text.length} win=$rateWindowSec bud=$budgetMs cut=$cutOnNewer")
         val e = engineOrCreate()
         if (e == null) {
@@ -260,11 +262,11 @@ class NarrationController(
         val fit = if (windowSec == null || windowSec <= 0f) {
             0
         } else {
-            val window = windowSec.coerceAtLeast(MIN_SPEECH_WINDOW_SEC)
-            val estimated = charCount / VI_CHARS_PER_SECOND
+            val window = windowSec.coerceAtLeast(NarrationController.MIN_SPEECH_WINDOW_SEC)
+            val estimated = charCount / NarrationController.VI_CHARS_PER_SECOND
             if (estimated <= window) 0 else (((estimated / window) - 1f) * 100f).toInt()
         }
-        return (BASE_RATE_PERCENT + fit).coerceIn(0, MAX_RATE_BUMP_PERCENT) / RATE_STEP * RATE_STEP
+        return (NarrationController.BASE_RATE_PERCENT + fit).coerceIn(0, NarrationController.MAX_RATE_BUMP_PERCENT) / NarrationController.RATE_STEP * NarrationController.RATE_STEP
     }
 
     private fun notifySpeechStart() {
@@ -327,8 +329,7 @@ class NarrationController(
     }
 
     private fun fadePlayerVolumeTo(target: Float) {
-        val generation = AtomicInteger()
-        val gen = generation.incrementAndGet()
+        val gen = fadeGeneration.incrementAndGet()
         mainHandler.post {
             val player = playerProvider() ?: return@post
             val start = player.volume
@@ -339,14 +340,14 @@ class NarrationController(
             }
             fun step(index: Int) {
                 if (generation.get() != gen) return
-                if (index >= FADE_STEPS) {
+                if (index >= NarrationController.FADE_STEPS) {
                     runCatching { player.volume = clamped }
                     return
                 }
-                val t = (index + 1).toFloat() / FADE_STEPS
+                val t = (index + 1).toFloat() / NarrationController.FADE_STEPS
                 val value = start + (clamped - start) * t
                 runCatching { player.volume = value.coerceIn(0f, 1f) }
-                mainHandler.postDelayed({ step(index + 1) }, FADE_STEP_MS)
+                mainHandler.postDelayed({ step(index + 1) }, NarrationController.FADE_STEP_MS)
             }
             step(0)
         }
@@ -372,8 +373,8 @@ class NarrationController(
     }
 
     private fun shouldNarrateText(text: String): Boolean {
-        if (looksVietnamese(text)) return true
-        if (hasNonLatinScript(text)) return true
+        if (NarrationController.looksVietnamese(text)) return true
+        if (NarrationController.hasNonLatinScript(text)) return true
         val letters = text.count { it.isLetter() }
         return letters in 1..39 && text.all { !it.isLetter() || it in 'A'..'Z' || it in 'a'..'z' }
     }
@@ -410,15 +411,15 @@ class NarrationController(
 
     companion object {
         private const val TAG = "NuvioNarration"
-        private const val FADE_STEPS = 10
-        private const val FADE_STEP_MS = 30L
-        private const val VI_CHARS_PER_SECOND = 12f
-        private const val MIN_SPEECH_WINDOW_SEC = 1.2f
-        private const val BASE_RATE_PERCENT = 10
-        private const val MAX_RATE_BUMP_PERCENT = 50
-        private const val NEXT_CUE_GUARD_MS = 120L
-        private const val CUE_INTERVAL_EMA_ALPHA = 0.35f
-        private const val RATE_STEP = 10
+        private const val NarrationController.FADE_STEPS = 10
+        private const val NarrationController.FADE_STEP_MS = 30L
+        private const val NarrationController.VI_CHARS_PER_SECOND = 12f
+        private const val NarrationController.MIN_SPEECH_WINDOW_SEC = 1.2f
+        private const val NarrationController.BASE_RATE_PERCENT = 10
+        private const val NarrationController.MAX_RATE_BUMP_PERCENT = 50
+        private const val NarrationController.NEXT_CUE_GUARD_MS = 120L
+        private const val NarrationController.CUE_INTERVAL_EMA_ALPHA = 0.35f
+        private const val NarrationController.RATE_STEP = 10
 
         private const val VI_STRICT = "đĐăĂơƠưƯ"
         private const val VI_BROAD_ACCENTS =

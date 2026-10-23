@@ -1758,7 +1758,6 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             }
         }
         PlayerEvent.OnShowNarrationDialog -> {
-            narration()?.probe()
             _uiState.update {
                 it.copy(
                     showNarrationDialog = true,
