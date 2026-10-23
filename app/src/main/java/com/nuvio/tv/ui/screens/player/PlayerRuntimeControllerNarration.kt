@@ -15,7 +15,7 @@ internal fun PlayerRuntimeController.applyNarrationSettings(settings: com.nuvio.
     val controller = narration() ?: return
     controller.setEnabled(settings.ttsNarrationEnabled)
     controller.setVolumePercent(settings.ttsNarrationVolume)
-    controller.setVoice(settings.ttsNarrationVoice)
+    controller.setNarrationVoice(settings.ttsNarrationVoice)
     controller.setDuckLevelPercent(settings.ttsDuckVolume)
     _uiState.update {
         it.copy(
@@ -59,11 +59,6 @@ internal fun PlayerRuntimeController.observeNarrationStatus() {
     scope.launch {
         narration()?.lastError?.collect { error ->
             _uiState.update { it.copy(narrationLastError = error) }
-        }
-    }
-    scope.launch {
-        narration()?.stage?.collect { step ->
-            _uiState.update { it.copy(narrationStage = step) }
         }
     }
 }

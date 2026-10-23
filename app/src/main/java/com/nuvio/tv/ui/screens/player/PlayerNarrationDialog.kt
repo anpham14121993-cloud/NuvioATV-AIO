@@ -43,8 +43,6 @@ internal fun PlayerNarrationDialog(
     engineStatus: NarrationEngineStatus = NarrationEngineStatus.LOADING,
     lastCue: String? = null,
     lastError: String? = null,
-    stage: String? = null,
-    onTest: () -> Unit = {},
     onEnable: (String) -> Unit,
     onDisable: () -> Unit,
     onDismiss: () -> Unit,
@@ -70,8 +68,6 @@ internal fun PlayerNarrationDialog(
         ?: stringResource(R.string.player_narration_no_cue)
     val errorText = lastError?.takeIf { it.isNotBlank() }
         ?.let { stringResource(R.string.player_narration_last_error, it) }
-    val stageText = stage?.takeIf { it.isNotBlank() }
-        ?.let { stringResource(R.string.player_narration_stage, it) }
 
     LaunchedEffect(narrationEnabled) {
         if (!v2) {
@@ -102,13 +98,6 @@ internal fun PlayerNarrationDialog(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = .55f), modifier = Modifier.padding(bottom = 4.dp)
             )
-            if (stageText != null) {
-                Text(
-                    stageText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = .45f), modifier = Modifier.padding(bottom = 4.dp)
-                )
-            }
             if (errorText != null) {
                 Text(
                     errorText,
@@ -134,13 +123,6 @@ internal fun PlayerNarrationDialog(
                         subtitle = stringResource(subtitles.getValue(mode)),
                         selected = narrationEnabled && subtitleMode == mode,
                         onClick = { onEnable(mode) },
-                    )
-                }
-                item {
-                    PlayerPanelRow(
-                        title = stringResource(R.string.player_narration_test),
-                        selected = false,
-                        onClick = onTest,
                     )
                 }
             }
@@ -179,14 +161,6 @@ internal fun PlayerNarrationDialog(
                     color = NuvioTheme.colors.TextPrimary.copy(alpha = .55f),
                     modifier = Modifier.padding(bottom = NuvioTheme.spacing.xs)
                 )
-                if (stageText != null) {
-                    Text(
-                        text = stageText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = NuvioTheme.colors.TextPrimary.copy(alpha = .45f),
-                        modifier = Modifier.padding(bottom = NuvioTheme.spacing.xs)
-                    )
-                }
                 if (errorText != null) {
                     Text(
                         text = errorText,
@@ -217,13 +191,6 @@ internal fun PlayerNarrationDialog(
                             subtitle = stringResource(subtitles.getValue(mode)),
                             selected = narrationEnabled && subtitleMode == mode,
                             onClick = { onEnable(mode) },
-                        )
-                    }
-                    item {
-                        PlayerPanelRow(
-                            title = stringResource(R.string.player_narration_test),
-                            selected = false,
-                            onClick = onTest,
                         )
                     }
                 }

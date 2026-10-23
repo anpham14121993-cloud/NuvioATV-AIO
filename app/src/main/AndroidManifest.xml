@@ -75,11 +75,6 @@
 
         <!-- The offline voice engine runs in its own process: a native crash in
              the ONNX runtime or the G2P library must never take the player down. -->
-        <service
-            android:name=".core.player.tts.NarrationTtsService"
-            android:exported="false"
-            android:process=":tts"
-            android:stopWithTask="false" />
 
         <activity
             android:name=".MainActivity"

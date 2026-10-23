@@ -138,8 +138,7 @@ data class PlayerUiState(
     val narrationLastCue: String? = null,
     /** Last engine or synthesis failure, shown in the narration dialog. */
     val narrationLastError: String? = null,
-    /** Last reported engine step, so a stuck model load can be pinpointed. */
-    val narrationStage: String? = null,
+
     val dimHdrOverlays: Boolean = false,
     val isHdrVideo: Boolean = false,
     // Subtitle style settings
@@ -366,7 +365,7 @@ sealed class PlayerEvent {
     data object OnDismissNarrationDialog : PlayerEvent()
     data class OnEnableNarration(val subtitleMode: String) : PlayerEvent()
     data object OnDisableNarration : PlayerEvent()
-    data object OnTestNarration : PlayerEvent()
+
     data object OnShowMoreDialog : PlayerEvent()
     data object OnDismissMoreDialog : PlayerEvent()
     data object OnShowEpisodesPanel : PlayerEvent()
