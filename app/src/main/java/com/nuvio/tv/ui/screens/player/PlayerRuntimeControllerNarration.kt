@@ -15,8 +15,8 @@ internal fun PlayerRuntimeController.applyNarrationSettings(settings: com.nuvio.
     val controller = narration() ?: return
     controller.setEnabled(settings.ttsNarrationEnabled)
     controller.setVolumePercent(settings.ttsNarrationVolume)
-    controller.setNarrationVoice(settings.ttsNarrationVoice)
-    controller.setDuckLevelPercent(settings.ttsDuckVolume)
+    controller.narrationVoice = settings.ttsNarrationVoice
+    controller.duckLevelPercent = settings.ttsDuckVolume
     _uiState.update {
         it.copy(
             narrationEnabled = settings.ttsNarrationEnabled,
