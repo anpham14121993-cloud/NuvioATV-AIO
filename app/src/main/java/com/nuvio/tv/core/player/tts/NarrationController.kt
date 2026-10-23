@@ -161,6 +161,7 @@ class NarrationController(
             stopSpeaking()
             unduckPlayer()
         } else {
+            start()
             runCatching { engineOrCreate()?.warmUp() }
         }
     }
