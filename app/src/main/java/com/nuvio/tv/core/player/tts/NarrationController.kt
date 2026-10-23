@@ -44,6 +44,9 @@ class NarrationController(
     /** The last failure of the engine or of a synthesis, for the diagnostics. */
     val lastError = MutableStateFlow<String?>(null)
 
+    /** The last step the engine reported, so a stuck load can be pinpointed. */
+    val stage = MutableStateFlow<String?>(null)
+
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -118,6 +121,9 @@ class NarrationController(
                     speaking.set(false)
                     unduckPlayer()
                 }
+                NarrationTtsService.MSG_STAGE -> {
+                    stage.value = msg.data?.getString(NarrationTtsService.ARG_STAGE)
+                }
                 NarrationTtsService.MSG_ERROR -> {
                     val detail = msg.data?.getString(NarrationTtsService.ARG_DETAIL).orEmpty()
                     Log.w(TAG, "narration error: $detail")
@@ -136,9 +142,17 @@ class NarrationController(
             serviceDisabled = false
             val messenger = Messenger(binder)
             serviceMessenger = messenger
+            stage.value = "bind: connected"
             val hello = Message.obtain(null, NarrationTtsService.MSG_HELLO)
             hello.replyTo = clientMessenger
             runCatching { messenger.send(hello) }
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            bound = false
+            serviceMessenger = null
+            lastError.value = "service: null binding"
+            stage.value = "bind: null"
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -174,7 +188,48 @@ class NarrationController(
     fun warmUp() {
         if (released) return
         connect()
-        serviceMessenger?.send(Message.obtain(null, NarrationTtsService.MSG_WARMUP))
+        val messenger = serviceMessenger
+        if (messenger == null) {
+            // The binding is asynchronous: the hello/warmup handshake finishes in
+            // onServiceConnected. Report it if the service never answers.
+            mainHandler.postDelayed({
+                if (!released && status.value == NarrationEngineStatus.LOADING && stage.value == null) {
+                    lastError.value = "service: no reply (bound=$bound)"
+                }
+            }, 8000L)
+            return
+        }
+        runCatching { messenger.send(Message.obtain(null, NarrationTtsService.MSG_WARMUP)) }
+        mainHandler.postDelayed({
+            if (!released && status.value == NarrationEngineStatus.LOADING) {
+                lastError.value = "load: still loading (${stage.value ?: "no step"})"
+            }
+        }, 120_000L)
+    }
+
+    /** Asks the service how far the load got, for the diagnostics while a dialog is open. */
+    fun probe() {
+        connect()
+        val messenger = serviceMessenger
+        if (messenger == null) {
+            stage.value = "bind: waiting"
+            if (!bound && !serviceDisabled) lastError.value = "service: not bound"
+            return
+        }
+        runCatching { messenger.send(Message.obtain(null, NarrationTtsService.MSG_PING)) }
+    }
+
+    /** Speaks one fixed sentence to test the whole pipeline end to end. */
+    fun testSpeak() {
+        if (!enabled || released) return
+        val messenger = serviceMessenger
+        if (messenger == null) {
+            connect()
+            lastError.value = "service: not bound"
+            return
+        }
+        lastError.value = null
+        runCatching { messenger.send(Message.obtain(null, NarrationTtsService.MSG_TEST)) }
     }
 
     fun setVolumePercent(volumePercent: Int) {
@@ -266,11 +321,16 @@ class NarrationController(
     private fun connect() {
         if (released || bound || serviceDisabled) return
         val intent = Intent(appContext, NarrationTtsService::class.java)
-        runCatching {
+        val started = runCatching {
             appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
         }.onFailure {
             Log.w(TAG, "could not bind the narration service", it)
             lastError.value = "service: ${it.javaClass.simpleName}"
+        }.getOrDefault(false)
+        if (!started) {
+            Log.w(TAG, "bindService returned false")
+            stage.value = "bind: false"
+            lastError.value = "service: bind refused"
         }
     }
 

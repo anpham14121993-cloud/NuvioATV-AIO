@@ -32,7 +32,16 @@ class NarrationTtsService : Service() {
                     reply(MSG_READY)
                 }
                 MSG_WARMUP -> {
+                    stage("warmup: got")
                     ensureEngine()
+                }
+                MSG_PING -> {
+                    reply(MSG_STATUS, Bundle().apply { putString(ARG_STATE, lastStatus.name) })
+                    reply(MSG_STAGE, Bundle().apply { putString(ARG_STAGE, lastStage) })
+                }
+                MSG_TEST -> {
+                    stage("test: start")
+                    testSpeak()
                 }
                 MSG_SPEAK -> {
                     val data = msg.data ?: Bundle()
@@ -81,10 +90,12 @@ class NarrationTtsService : Service() {
                 onSpeechEnd = { reply(MSG_SPEECH_END) },
                 onError = { detail, _ -> reply(MSG_ERROR, Bundle().apply { putString(ARG_DETAIL, detail) }) },
                 onStatus = { state ->
+                    lastStatus = state
                     reply(MSG_STATUS, Bundle().apply {
                         putString(ARG_STATE, state.name)
                     })
                 },
+                onStage = { text -> stage(text) },
             )
             engine = created
             // Load the 261 MB of weights off the main thread of this process.
@@ -128,6 +139,32 @@ class NarrationTtsService : Service() {
 
     private var currentVolume = 1f
 
+    private var lastStage = "service: idle"
+    private var lastStatus = NarrationEngineStatus.LOADING
+
+    private fun stage(text: String) {
+        lastStage = text
+        Log.i(TAG, "stage: $text")
+        reply(MSG_STAGE, Bundle().apply { putString(ARG_STAGE, text) })
+    }
+
+    /** Speaks one fixed sentence so the user can hear whether the engine works. */
+    private fun testSpeak() {
+        val created = ensureEngine() ?: return
+        created.setNarrationVolume(currentVolume)
+        created.speak(
+            text = "Xin chào, đây là bài kiểm tra giọng đọc tiếng Việt ngoại tuyến.",
+            voiceApiName = DEFAULT_VOICE,
+            ratePercent = 0,
+            cutOnNewer = true,
+            budgetMs = null,
+            onResult = { ok, detail ->
+                if (!ok) reply(MSG_ERROR, Bundle().apply { putString(ARG_DETAIL, "test: $detail") })
+                else stage("test: done")
+            },
+        )
+    }
+
     private fun reply(what: Int, data: Bundle? = null) {
         val target = client ?: return
         val message = Message.obtain(null, what)
@@ -151,6 +188,13 @@ class NarrationTtsService : Service() {
         const val MSG_SPEECH_END = 11
         const val MSG_ERROR = 12
         const val MSG_RELEASED = 13
+        const val MSG_STAGE = 14
+        const val MSG_PING = 15
+        const val MSG_TEST = 16
+
+        const val ARG_STAGE = "stage"
+
+        private const val DEFAULT_VOICE = "Thùy Dung"
 
         const val ARG_TEXT = "text"
         const val ARG_VOICE = "voice"

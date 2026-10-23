@@ -35,6 +35,7 @@ class VieneuNarrationEngine(
     private val onSpeechEnd: () -> Unit = {},
     private val onError: (text: String, rate: Int) -> Unit = { _, _ -> },
     private val onStatus: (NarrationEngineStatus) -> Unit = {},
+    private val onStage: (String) -> Unit = {},
 ) : NarrationTtsEngine {
 
     private companion object {
@@ -230,28 +231,41 @@ class VieneuNarrationEngine(
             engine?.let { return it }
             try {
                 onStatus(NarrationEngineStatus.LOADING)
+                stage("extract: start")
                 val base = VieneuModelStore.modelDir(appContext)
+                stage("extract: ok")
                 val heads = File(base, "heads.bin")
+                stage("read: tokenizer")
                 val tokJson = readText(File(base, "tokenizer.json"))
                 val g2p = File(base, "sea_g2p.bin").absolutePath
                 Log.i(TAG, "engine: load start")
-                VieneuEngine.TRACE = java.util.function.Consumer { msg -> Log.i(TAG, msg) }
+                stage("load: sessions")
+                VieneuEngine.TRACE = java.util.function.Consumer { msg ->
+                    Log.i(TAG, msg)
+                    stage("ort: ${msg.take(40)}")
+                }
                 val t0 = System.nanoTime()
                 engine = VieneuEngine(base, heads, tokJson, g2p, THREADS)
                 loadError = ""
                 Log.i(TAG, "engine: load ok")
-                Log.i(TAG, "engine loaded in ${"%.2f".format((System.nanoTime() - t0) / 1e9)}s")
+                stage("load: ok ${"%.1f".format((System.nanoTime() - t0) / 1e9)}s")
                 loadVoices(File(base, "voices_test.json"))
+                stage("voices: ${voices.size}")
                 onStatus(NarrationEngineStatus.READY)
             } catch (t: Throwable) {
                 loadError = t.javaClass.simpleName + ":" + (t.message?.take(60) ?: "")
                 Log.i(TAG, "engine: load FAIL $loadError")
                 Log.e(TAG, "engine load failed", t)
+                stage("load: FAIL $loadError")
                 onStatus(NarrationEngineStatus.FAILED)
                 onError("model: $loadError", 0)
             }
             return engine
         }
+    }
+
+    private fun stage(text: String) {
+        runCatching { onStage(text) }
     }
 
     private fun loadVoices(f: File) {
@@ -367,12 +381,14 @@ class VieneuNarrationEngine(
             // on-demand calls can never corrupt each other's audio. Never touch the
             // engine after release() closed its native sessions.
             Log.i(TAG, "synth: start len=" + text.length)
+            stage("synth: start ${text.length}")
             logMemory("synth: start")
             val wav = synchronized(synthLock) {
                 if (released) return null
                 e.synthesize(text, voice.emb, voice.codes, p)
             }
             Log.i(TAG, "synth: ok samples=" + wav.size)
+            stage("synth: ok ${wav.size}")
             logMemory("synth: ok")
             synthOk.incrementAndGet()
             putCache(key, wav)
@@ -381,6 +397,7 @@ class VieneuNarrationEngine(
         } catch (t: Throwable) {
             synthFail.incrementAndGet()
             Log.i(TAG, "synth: FAIL " + (t.javaClass.simpleName) + ":" + (t.message?.take(80) ?: ""))
+            stage("synth: FAIL ${t.javaClass.simpleName}")
             Log.w(TAG, "synth failed", t)
             null
         }
@@ -443,8 +460,10 @@ class VieneuNarrationEngine(
                 }
             }
             Log.i(TAG, "play: writing")
+            stage("play: write ${boosted.size}")
             val written = track.write(boosted, 0, boosted.size, AudioTrack.WRITE_BLOCKING)
             Log.i(TAG, "play: wrote=" + written)
+            stage("play: wrote=$written")
             if (written < 0) {
                 r.onResult?.invoke(false, "audiotrack-write:$written")
                 return
@@ -457,6 +476,7 @@ class VieneuNarrationEngine(
                 return
             }
             Log.i(TAG, "play: start speed=" + speed)
+            stage("play: speaking")
             playStart.incrementAndGet()
             val frames = boosted.size.coerceAtLeast(written)
             var durationMs = frames.toLong() * 1000L / sr

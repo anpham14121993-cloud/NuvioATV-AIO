@@ -61,6 +61,11 @@ internal fun PlayerRuntimeController.observeNarrationStatus() {
             _uiState.update { it.copy(narrationLastError = error) }
         }
     }
+    scope.launch {
+        narration()?.stage?.collect { step ->
+            _uiState.update { it.copy(narrationStage = step) }
+        }
+    }
 }
 
 /**

@@ -4106,6 +4106,8 @@
     <string name="player_narration_last_cue">Dòng phụ đề cuối: %1$s</string>
     <string name="player_narration_no_cue">Chưa có dòng phụ đề nào tới được thuyết minh.</string>
     <string name="player_narration_last_error">Lỗi gần nhất: %1$s</string>
+    <string name="player_narration_stage">Bước: %1$s</string>
+    <string name="player_narration_test">Nghe thử giọng đọc</string>
     <string name="playback_narration_info">Thuyết minh tiếng Việt ngoại tuyến (VieNeu TTS). Dò phụ đề đang hiện sẽ được đọc to, đồng thời tiếng phim được hạ nhỏ.</string>
     <string name="playback_narration_enabled">Đọc phụ đề thành tiếng</string>
     <string name="playback_narration_enabled_sub">Đọc dò phụ đề hiện tại bằng giọng Việt ngoại tuyến có sẵn.</string>

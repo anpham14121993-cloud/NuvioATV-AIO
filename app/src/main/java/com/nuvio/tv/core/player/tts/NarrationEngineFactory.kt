@@ -10,12 +10,14 @@ object NarrationEngineFactory {
         onSpeechEnd: () -> Unit,
         onError: (text: String, rate: Int) -> Unit,
         onStatus: (NarrationEngineStatus) -> Unit = {},
+        onStage: (String) -> Unit = {},
     ): NarrationTtsEngine = VieneuNarrationEngine(
         context.applicationContext,
         onSpeechStart = onSpeechStart,
         onSpeechEnd = onSpeechEnd,
         onError = onError,
         onStatus = onStatus,
+        onStage = onStage,
     )
 }
 

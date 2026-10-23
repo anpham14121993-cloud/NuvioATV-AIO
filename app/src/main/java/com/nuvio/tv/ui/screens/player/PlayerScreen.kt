@@ -2462,6 +2462,8 @@ fun PlayerScreen(
                     engineStatus = uiState.narrationEngineStatus,
                     lastCue = uiState.narrationLastCue,
                     lastError = uiState.narrationLastError,
+                    stage = uiState.narrationStage,
+                    onTest = { viewModel.onEvent(PlayerEvent.OnTestNarration) },
                     onEnable = { mode -> viewModel.onEvent(PlayerEvent.OnEnableNarration(mode)) },
                     onDisable = { viewModel.onEvent(PlayerEvent.OnDisableNarration) },
                     onDismiss = { viewModel.onEvent(PlayerEvent.OnDismissNarrationDialog) }
