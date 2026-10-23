@@ -502,7 +502,7 @@ class PlayerRuntimeController(
             synchronized(this) {
                 if (narrationController == null) {
                     narrationController = com.nuvio.tv.core.player.tts.NarrationController(
-                        context = context.applicationContext,
+                        appContext = context.applicationContext,
                         playerProvider = { _exoPlayer },
                     )
                     narrationController.start()
