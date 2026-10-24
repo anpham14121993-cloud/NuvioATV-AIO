@@ -123,7 +123,6 @@ class NarrationController(
             tts = null
             systemTtsStatus = SystemTtsStatus.NOT_AVAILABLE
         }
-        runCatching { engineOrCreate()?.warmUp() }
     }
 
     private fun onTtsInit(status: Int) {
@@ -162,7 +161,6 @@ class NarrationController(
             unduckPlayer()
         } else {
             start()
-            runCatching { engineOrCreate()?.warmUp() }
         }
     }
 

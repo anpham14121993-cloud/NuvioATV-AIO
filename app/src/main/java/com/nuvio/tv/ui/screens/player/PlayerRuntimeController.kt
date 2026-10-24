@@ -498,17 +498,20 @@ class PlayerRuntimeController(
     internal var narrationController: com.nuvio.tv.core.player.tts.NarrationController? = null
 
     internal fun narration(): com.nuvio.tv.core.player.tts.NarrationController? {
-        if (narrationController == null) {
-            synchronized(this) {
-                if (narrationController == null) {
-                    narrationController = com.nuvio.tv.core.player.tts.NarrationController(
-                        appContext = context.applicationContext,
-                        playerProvider = { _exoPlayer },
-                    )
-                }
-            }
+        narrationController?.let { return it }
+        synchronized(this) {
+            narrationController?.let { return it }
+            val created = runCatching {
+                com.nuvio.tv.core.player.tts.NarrationController(
+                    appContext = context.applicationContext,
+                    playerProvider = { _exoPlayer },
+                )
+            }.onFailure {
+                android.util.Log.e("NuvioNarration", "Could not create narration controller", it)
+            }.getOrNull()
+            narrationController = created
+            return created
         }
-        return narrationController
     }
 
     /**
