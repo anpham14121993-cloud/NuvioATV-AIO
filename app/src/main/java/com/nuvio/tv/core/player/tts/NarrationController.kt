@@ -102,6 +102,7 @@ class NarrationController(
         if (triedCreateEngine) return null
         triedCreateEngine = true
         return runCatching {
+            NarrationDiag.log(appContext, "ctrl: create offline engine")
             NarrationEngineFactory.create(
                 context = appContext,
                 onSpeechStart = { notifySpeechStart() },
@@ -109,23 +110,28 @@ class NarrationController(
                 onError = { failedText, failedRate -> systemSpeak(failedText, failedRate) },
                 onStatus = { state -> status.value = state },
             )
+        }.onFailure {
+            NarrationDiag.log(appContext, "ctrl: engine create failed ${it.javaClass.simpleName}")
         }.getOrNull().also { engine = it }
     }
 
     fun start() {
         if (tts != null) return
+        NarrationDiag.log(appContext, "ctrl: start system tts")
         try {
             tts = TextToSpeech(appContext) { status ->
                 runCatching { onTtsInit(status) }
             }
         } catch (t: Throwable) {
             Log.e("NuvioNarration", "System TTS init failed", t)
+            NarrationDiag.log(appContext, "tts: create failed ${t.javaClass.simpleName}")
             tts = null
             systemTtsStatus = SystemTtsStatus.NOT_AVAILABLE
         }
     }
 
     private fun onTtsInit(status: Int) {
+        NarrationDiag.log(appContext, "tts: init=$status")
         if (status != TextToSpeech.SUCCESS) {
             systemTtsStatus = SystemTtsStatus.NOT_AVAILABLE
             return
@@ -136,10 +142,12 @@ class NarrationController(
         } catch (_: Exception) {
             TextToSpeech.LANG_NOT_SUPPORTED
         }
+        NarrationDiag.log(appContext, "tts: vi-VN availability=$availability")
         if (availability == TextToSpeech.LANG_MISSING_DATA ||
             availability == TextToSpeech.LANG_NOT_SUPPORTED
         ) {
             systemTtsStatus = SystemTtsStatus.NOT_AVAILABLE
+            NarrationDiag.log(appContext, "tts: vi-VN missing")
             return
         }
         try {
@@ -226,8 +234,10 @@ class NarrationController(
     ) {
         val rate = chooseRatePercent(text.length, rateWindowSec)
         Log.i("NuvioNarration", "speakResolved rate=$rate len=${text.length} win=$rateWindowSec bud=$budgetMs cut=$cutOnNewer")
+        NarrationDiag.log(appContext, "speak: len=${text.length} rate=$rate w=$rateWindowSec b=$budgetMs")
         val e = engineOrCreate()
         if (e == null) {
+            NarrationDiag.log(appContext, "speak: no engine -> system tts")
             systemSpeak(text, rate)
             return
         }
@@ -242,13 +252,18 @@ class NarrationController(
             )
         } catch (t: Throwable) {
             Log.e("NuvioNarration", "Narration speak failed, falling back to system TTS", t)
+            NarrationDiag.log(appContext, "speak: threw ${t.javaClass.simpleName} -> system tts")
             systemSpeak(text, rate)
         }
     }
 
     private fun systemSpeak(text: String, rate: Int) {
-        if (!ttsReady.get()) return
+        if (!ttsReady.get()) {
+            NarrationDiag.log(appContext, "sysTts: not ready (${systemTtsStatus})")
+            return
+        }
         if (systemTtsStatus != SystemTtsStatus.READY) return
+        NarrationDiag.log(appContext, "sysTts: speak len=${text.length}")
         speakFlushing(text, rate)
     }
 
@@ -285,6 +300,7 @@ class NarrationController(
             engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         } catch (t: Throwable) {
             Log.e("NuvioNarration", "System TTS speak failed", t)
+            NarrationDiag.log(appContext, "sysTts: threw ${t.javaClass.simpleName}")
             unduckPlayer()
         }
     }

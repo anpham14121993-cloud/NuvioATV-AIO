@@ -94,6 +94,8 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         com.nuvio.tv.core.util.StartupLatencyTrace.coldOnce("app_create")
         super.onCreate()
+        installNarrationCrashLog()
+        com.nuvio.tv.core.player.tts.NarrationDiag.log(this, "app: create")
         com.nuvio.tv.core.util.StartupLatencyTrace.coldOnce("app_injected")
         PluginRuntimeHooks.onApplicationCreate(this)
         androidTvChannelSyncService.start()
@@ -126,6 +128,29 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
 
         // Expire stored seek thumbnails even when nothing is played.
         com.nuvio.tv.core.player.thumbnail.SeekThumbnails.scheduleStartupHousekeeping(this)
+    }
+
+    /**
+     * Keeps a JVM crash trace in the narration diagnostics file: the offline TTS
+     * engine runs in the player process, so an uncaught error there would
+     * otherwise leave no trace on a TV box without adb.
+     */
+    private fun installNarrationCrashLog() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                com.nuvio.tv.core.player.tts.NarrationDiag.log(
+                    this,
+                    "CRASH ${thread.name} ${error.javaClass.name}: ${error.message}",
+                )
+                val writer = java.io.StringWriter()
+                error.printStackTrace(java.io.PrintWriter(writer))
+                writer.toString().lineSequence().take(10).forEach { line ->
+                    com.nuvio.tv.core.player.tts.NarrationDiag.log(this, "  $line")
+                }
+            }
+            previous?.uncaughtException(thread, error)
+        }
     }
 
     private fun dirBytes(name: String): Long {

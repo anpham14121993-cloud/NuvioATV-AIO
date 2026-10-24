@@ -13,8 +13,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -25,6 +30,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import com.nuvio.tv.core.player.tts.NarrationDiag
 import com.nuvio.tv.core.player.tts.NarrationEngineStatus
 import com.nuvio.tv.data.local.NarrationSubtitleMode
 import com.nuvio.tv.ui.components.PlayerPanelRow
@@ -105,6 +111,7 @@ internal fun PlayerNarrationDialog(
                     color = Color(0xFFFFB4A9), modifier = Modifier.padding(bottom = 12.dp)
                 )
             }
+            NarrationDiagText()
             LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item {
                     PlayerPanelRow(
@@ -169,6 +176,7 @@ internal fun PlayerNarrationDialog(
                         modifier = Modifier.padding(bottom = NuvioTheme.spacing.sm)
                     )
                 }
+                NarrationDiagText()
                 LazyColumn(
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -197,4 +205,27 @@ internal fun PlayerNarrationDialog(
             }
         }
     }
+}
+
+/**
+ * Shows the last recorded narration steps. The log lives in filesDir, so it
+ * keeps the lines written just before a crash: after the box restarts the very
+ * same lines tell which native step took the process down.
+ */
+@Composable
+private fun NarrationDiagText() {
+    val context = LocalContext.current
+    val text by produceState(initialValue = "") {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            NarrationDiag.tail(context, 14)
+        }
+    }
+    if (text.isBlank()) return
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+        color = Color(0xFF8FC7FF),
+        maxLines = 14,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
 }

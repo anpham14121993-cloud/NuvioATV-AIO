@@ -7,8 +7,10 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.nuvio.app.vieneu.VieneuEngine
@@ -45,6 +47,7 @@ class VieneuNarrationEngine(
         const val MAX_CACHE = 32
         const val PREFETCH_PACE_MS = 300L
         const val MAX_DISK_BYTES = 256L * 1024L * 1024L
+        const val OFFLINE_MIN_AVAIL_MB = 300L
         const val MALE = "Adam"
         const val FEMALE = "Thùy Dung"
     }
@@ -231,9 +234,29 @@ class VieneuNarrationEngine(
             engine?.let { return it }
             try {
                 onStatus(NarrationEngineStatus.LOADING)
+                stage(
+                    "abi: ${Build.SUPPORTED_ABIS.joinToString(",")} " +
+                        "64bit=${Process.is64Bit()} sdk=${Build.VERSION.SDK_INT}"
+                )
+                val mem = runCatching {
+                    val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+                    info
+                }.getOrNull()
+                if (mem != null) {
+                    val availMb = mem.availMem / 1048576L
+                    val totalMb = mem.totalMem / 1048576L
+                    stage("mem: avail=${availMb}M total=${totalMb}M low=${mem.lowMemory}")
+                    if (availMb < OFFLINE_MIN_AVAIL_MB) {
+                        loadError = "low-memory(${availMb}M)"
+                        stage("load: SKIP $loadError")
+                        onStatus(NarrationEngineStatus.FAILED)
+                        return null
+                    }
+                }
                 stage("extract: start")
                 val base = VieneuModelStore.modelDir(appContext)
-                stage("extract: ok")
+                stage("extract: ok free=${base.usableSpace / 1048576L}M")
                 val heads = File(base, "heads.bin")
                 stage("read: tokenizer")
                 val tokJson = readText(File(base, "tokenizer.json"))
@@ -258,7 +281,6 @@ class VieneuNarrationEngine(
                 Log.e(TAG, "engine load failed", t)
                 stage("load: FAIL $loadError")
                 onStatus(NarrationEngineStatus.FAILED)
-                onError("model: $loadError", 0)
             }
             return engine
         }
@@ -266,6 +288,7 @@ class VieneuNarrationEngine(
 
     private fun stage(text: String) {
         runCatching { onStage(text) }
+        NarrationDiag.log(appContext, text)
     }
 
     private fun loadVoices(f: File) {
