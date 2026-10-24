@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -218,17 +221,19 @@ private fun NarrationDiagText() {
     val text by produceState(initialValue = "") {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             NarrationDiag.captureLogcatBlocking(context)
-            val stages = NarrationDiag.tail(context, 10)
-            val crash = NarrationDiag.logcatTail(context, 12)
+            val stages = NarrationDiag.tail(context, 8)
+            val crash = NarrationDiag.logcatTail(context, 20)
             if (crash.isBlank()) stages else "$stages\n--- logcat ---\n$crash"
         }
     }
     if (text.isBlank()) return
     Text(
         text = text,
-        style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+        style = MaterialTheme.typography.bodySmall.copy(fontSize = 8.sp, fontFamily = FontFamily.Monospace),
         color = Color(0xFF8FC7FF),
-        maxLines = 26,
-        modifier = Modifier.padding(bottom = 8.dp),
+        modifier = Modifier
+            .heightIn(max = 170.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 8.dp),
     )
 }

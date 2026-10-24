@@ -84,7 +84,18 @@ object NarrationDiag {
             )
             val hits = lines.filter { line -> keys.any { line.contains(it, ignoreCase = true) } }
             append(context, logcatFile(context), "logcat: ${lines.size} lines, ${hits.size} hits")
-            hits.takeLast(90).forEach { append(context, logcatFile(context), it.take(190)) }
+            // The dialog only shows the file tail, so the crash block is written
+            // in the order that matters: the signal line and the top frames.
+            val crash = lines.filter { it.contains("F DEBUG") || it.contains("Fatal signal") }
+            if (crash.isNotEmpty()) {
+                val signal = crash.firstOrNull { it.contains("signal", true) } ?: crash.first()
+                append(context, logcatFile(context), "SIGNAL ${signal.take(170)}")
+                crash.filter { it.contains("#") }.take(16).forEach { line ->
+                    append(context, logcatFile(context), "F ${line.substringAfter("F DEBUG").take(170)}")
+                }
+                append(context, logcatFile(context), "SIGNAL-END")
+            }
+            hits.takeLast(20).forEach { append(context, logcatFile(context), it.take(190)) }
         }.onFailure {
             log(context, "logcat: failed ${it.javaClass.simpleName}")
         }
