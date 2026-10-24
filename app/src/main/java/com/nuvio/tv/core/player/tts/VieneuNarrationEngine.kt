@@ -274,7 +274,28 @@ class VieneuNarrationEngine(
                     stage("ort: ${msg.take(40)}")
                 }
                 val t0 = System.nanoTime()
-                engine = VieneuEngine(base, heads, tokJson, g2p, THREADS)
+                val loader = Thread.currentThread()
+                val hbDone = java.util.concurrent.atomic.AtomicBoolean(false)
+                val hb = Thread {
+                    var beats = 0
+                    while (!hbDone.get() && beats < 15) {
+                        try {
+                            Thread.sleep(2000)
+                        } catch (_: InterruptedException) {
+                            return@Thread
+                        }
+                        beats++
+                        val frames = loader.stackTrace.take(4)
+                            .joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+                        stage("hb${beats} ${loader.state} $frames")
+                    }
+                }.apply { isDaemon = true; name = "nuvio-vieneu-hb"; start() }
+                try {
+                    engine = VieneuEngine(base, heads, tokJson, g2p, if (Process.is64Bit()) THREADS else 2)
+                } finally {
+                    hbDone.set(true)
+                    hb.interrupt()
+                }
                 loadError = ""
                 Log.i(TAG, "engine: load ok")
                 stage("load: ok ${"%.1f".format((System.nanoTime() - t0) / 1e9)}s")

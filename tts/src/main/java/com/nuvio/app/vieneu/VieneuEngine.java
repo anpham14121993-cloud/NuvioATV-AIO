@@ -74,20 +74,22 @@ public final class VieneuEngine {
         // allocator small instead of letting ORT reserve big arenas.
         o.setMemoryPatternOptimization(false);
         o.setCPUArenaAllocator(false);
-        o.addConfigEntry("session.use_device_allocator_for_initializers", "1");
+        // 32-bit boxes crashed while ORT rewrote the int8 graph: skip the
+        // optimizer entirely there, the quantized graph runs as exported.
+        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         tr("ctor: options ok threads=" + Math.max(1, threads));
         File onnx = new File(modelDir, "onnx_int8");
         File codec = new File(modelDir, "codec");
-        tr("ctor: prefill start");
+        tr("ctor: prefill call");
         sPre = env.createSession(new File(onnx, "vieneu_prefill.onnx").getAbsolutePath(), o);
         tr("ctor: prefill ok");
-        tr("ctor: decode start");
+        tr("ctor: decode call");
         sDec = env.createSession(new File(onnx, "vieneu_decode_step.onnx").getAbsolutePath(), o);
         tr("ctor: decode ok");
-        tr("ctor: acoustic start");
+        tr("ctor: acoustic call");
         sAc = env.createSession(new File(onnx, "vieneu_acoustic_cached.onnx").getAbsolutePath(), o);
         tr("ctor: acoustic ok");
-        tr("ctor: codec start");
+        tr("ctor: codec call");
         sCodec = env.createSession(new File(codec, "moss_audio_tokenizer_decode_full.onnx").getAbsolutePath(), o);
         tr("ctor: codec ok");
         mem("ctor: sessions");
