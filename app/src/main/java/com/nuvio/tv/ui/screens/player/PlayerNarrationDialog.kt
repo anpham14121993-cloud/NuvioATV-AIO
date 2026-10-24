@@ -217,7 +217,10 @@ private fun NarrationDiagText() {
     val context = LocalContext.current
     val text by produceState(initialValue = "") {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            NarrationDiag.tail(context, 14)
+            NarrationDiag.captureLogcatBlocking(context)
+            val stages = NarrationDiag.tail(context, 10)
+            val crash = NarrationDiag.logcatTail(context, 12)
+            if (crash.isBlank()) stages else "$stages\n--- logcat ---\n$crash"
         }
     }
     if (text.isBlank()) return
@@ -225,7 +228,7 @@ private fun NarrationDiagText() {
         text = text,
         style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
         color = Color(0xFF8FC7FF),
-        maxLines = 14,
+        maxLines = 26,
         modifier = Modifier.padding(bottom = 8.dp),
     )
 }

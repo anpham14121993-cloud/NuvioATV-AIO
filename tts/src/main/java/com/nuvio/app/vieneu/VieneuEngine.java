@@ -73,9 +73,10 @@ public final class VieneuEngine {
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         o.setMemoryPatternOptimization(false);
-        o.setCPUArenaAllocator(false);
-        // 32-bit boxes crashed while ORT rewrote the int8 graph: skip the
-        // optimizer entirely there, the quantized graph runs as exported.
+        // The CPU arena stays enabled: disabling it makes ORT free initializers
+        // through the default allocator and crashed while loading the int8 graph.
+        // 32-bit boxes also skip the graph optimizer, the quantized graph runs
+        // as exported.
         o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         tr("ctor: options ok threads=" + Math.max(1, threads));
         File onnx = new File(modelDir, "onnx_int8");

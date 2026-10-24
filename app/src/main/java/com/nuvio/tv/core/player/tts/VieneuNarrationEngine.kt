@@ -53,7 +53,9 @@ class VieneuNarrationEngine(
     }
 
     private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "nuvio-vieneu-tts").apply { isDaemon = true }
+        // ORT builds its graph on this thread; 32-bit boxes need a deeper stack
+        // than the platform default or the load dies in a native stack overflow.
+        Thread(null, runnable, "nuvio-vieneu-tts", 8L * 1024L * 1024L).apply { isDaemon = true }
     }
     private val prefetchPool = Executors.newFixedThreadPool(1) { runnable ->
         Thread(runnable, "nuvio-vieneu-prefetch").apply { isDaemon = true }
@@ -278,9 +280,9 @@ class VieneuNarrationEngine(
                 val hbDone = java.util.concurrent.atomic.AtomicBoolean(false)
                 val hb = Thread {
                     var beats = 0
-                    while (!hbDone.get() && beats < 15) {
+                    while (!hbDone.get() && beats < 25) {
                         try {
-                            Thread.sleep(2000)
+                            Thread.sleep(1200)
                         } catch (_: InterruptedException) {
                             return@Thread
                         }

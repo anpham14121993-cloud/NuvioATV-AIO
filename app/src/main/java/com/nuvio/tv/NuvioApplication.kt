@@ -96,6 +96,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         installNarrationCrashLog()
         com.nuvio.tv.core.player.tts.NarrationDiag.log(this, "app: create")
+        com.nuvio.tv.core.player.tts.NarrationDiag.captureLogcat(this)
         com.nuvio.tv.core.util.StartupLatencyTrace.coldOnce("app_injected")
         PluginRuntimeHooks.onApplicationCreate(this)
         androidTvChannelSyncService.start()
