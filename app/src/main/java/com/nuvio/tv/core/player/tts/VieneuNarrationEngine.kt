@@ -252,7 +252,9 @@ class VieneuNarrationEngine(
                 if (mem != null) {
                     val availMb = mem.availMem / 1048576L
                     val totalMb = mem.totalMem / 1048576L
-                    val classMb = appContext.applicationInfo.memoryClass.toLong()
+                    val classMb = runCatching {
+                        (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass
+                    }.getOrDefault(0).toLong()
                     stage("mem: avail=${availMb}M total=${totalMb}M class=${classMb}M low=${mem.lowMemory}")
                     if (availMb < OFFLINE_MIN_AVAIL_MB) {
                         loadError = "low-memory(${availMb}M)"
