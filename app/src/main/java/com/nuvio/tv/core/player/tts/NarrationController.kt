@@ -101,6 +101,14 @@ class NarrationController(
         engine?.let { return it }
         if (triedCreateEngine) return null
         triedCreateEngine = true
+        // The bundled ONNX stack crashes natively while creating its first
+        // session on 32-bit ARM boxes, which takes the whole player down. Use
+        // the platform Vietnamese voice there instead.
+        if (!android.os.Process.is64Bit()) {
+            NarrationDiag.log(appContext, "engine: skipped on 32-bit -> system tts")
+            status.value = NarrationEngineStatus.READY
+            return null
+        }
         return runCatching {
             NarrationDiag.log(appContext, "ctrl: create offline engine")
             NarrationEngineFactory.create(
