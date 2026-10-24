@@ -2,8 +2,8 @@ package com.nuvio.app.vieneu;
 
 import java.io.File;
 import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.MappedByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
@@ -41,19 +41,24 @@ public final class VieneuEngine {
     private static final int TEXT_VOCAB = 419, AUDIO_VOCAB = 1024, STYLE_ID = 16;
 
     private final OrtEnvironment env;
-    private final OrtSession sPre, sDec, sAc, sCodec;
+    // Sessions are opened on demand and closed as soon as their stage is done.
+    // vieneu_prefill.onnx and vieneu_decode_step.onnx both reference the same
+    // 99 MB vieneu_backbone_shared.data, so holding them open together costs
+    // ~198 MB of native memory - more than a 32-bit process can map.
+    private OrtSession sPre, sDec, sAc, sCodec;
+    private final OrtSession.SessionOptions opts;
+    private final File onnxDir, codecDir;
     private final BpeTokenizer tok;
     private final G2P g2p;
     private final Random rnd = new Random(20261016L);
     private boolean lastEos;
     private volatile boolean closed;
 
-    private final float[] textEmb = new float[TEXT_VOCAB * H];
-    private final float[] audioEmb = new float[NVQ * AUDIO_VOCAB * H];
-    private final float[] xvecW = new float[H * 192];
-    private final float[] xvecB = new float[H];
-    private final float[] lnW = new float[H];
-    private final float[] lnB = new float[H];
+    // heads.bin is mapped, never copied into the Java heap: audio_emb alone is
+    // 16*1024*768 floats (48 MB), which a 32-bit box cannot afford on top of the
+    // ONNX weights. The kernel pages in only what a synthesis actually touches.
+    private MappedByteBuffer headsMap;
+    private FloatBuffer textEmb, audioEmb, xvecW, xvecB, lnW, lnB;
     private float lnEps;
 
     private final float[] idxBuf = new float[1024];
@@ -67,32 +72,25 @@ public final class VieneuEngine {
         env = OrtEnvironment.getEnvironment();
         tr("ctor: env ok " + env);
         tr("ctor: options start");
-        OrtSession.SessionOptions o = new OrtSession.SessionOptions();
-        o.setIntraOpNumThreads(Math.max(1, threads));
-        o.setInterOpNumThreads(1);
+        opts = new OrtSession.SessionOptions();
+        opts.setIntraOpNumThreads(Math.max(1, threads));
+        opts.setInterOpNumThreads(1);
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
-        o.setMemoryPatternOptimization(false);
+        opts.setMemoryPatternOptimization(false);
         // The CPU arena stays enabled: disabling it makes ORT free initializers
         // through the default allocator and crashed while loading the int8 graph.
         // 32-bit boxes also skip the graph optimizer, the quantized graph runs
         // as exported.
-        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         tr("ctor: options ok threads=" + Math.max(1, threads));
-        File onnx = new File(modelDir, "onnx_int8");
-        File codec = new File(modelDir, "codec");
-        tr("ctor: prefill call");
-        sPre = env.createSession(new File(onnx, "vieneu_prefill.onnx").getAbsolutePath(), o);
-        tr("ctor: prefill ok");
-        tr("ctor: decode call");
-        sDec = env.createSession(new File(onnx, "vieneu_decode_step.onnx").getAbsolutePath(), o);
-        tr("ctor: decode ok");
+        onnxDir = new File(modelDir, "onnx_int8");
+        codecDir = new File(modelDir, "codec");
+        // Only the small acoustic graph stays resident; it is used on every AR
+        // frame and does not share the backbone weights.
         tr("ctor: acoustic call");
-        sAc = env.createSession(new File(onnx, "vieneu_acoustic_cached.onnx").getAbsolutePath(), o);
+        sAc = openSession("vieneu_acoustic_cached.onnx");
         tr("ctor: acoustic ok");
-        tr("ctor: codec call");
-        sCodec = env.createSession(new File(codec, "moss_audio_tokenizer_decode_full.onnx").getAbsolutePath(), o);
-        tr("ctor: codec ok");
         mem("ctor: sessions");
 
         tr("ctor: heads start");
@@ -108,19 +106,55 @@ public final class VieneuEngine {
     }
 
     private void loadHeads(File f) throws Exception {
+        long len;
         try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
-            ByteBuffer bb = raf.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, raf.length());
-            bb.order(ByteOrder.LITTLE_ENDIAN);
-            FloatBuffer fb = bb.asFloatBuffer();
-            int p = 0;
-            fb.get(textEmb, 0, textEmb.length); p += textEmb.length;
-            fb.get(audioEmb, 0, audioEmb.length); p += audioEmb.length;
-            fb.get(xvecW, 0, xvecW.length); p += xvecW.length;
-            fb.get(xvecB, 0, xvecB.length); p += xvecB.length;
-            fb.get(lnW, 0, lnW.length); p += lnW.length;
-            fb.get(lnB, 0, lnB.length); p += lnB.length;
-            lnEps = fb.get(p);
+            len = raf.length();
+            long expected = (long) (TEXT_VOCAB * H + NVQ * AUDIO_VOCAB * H + H * 192 + 3 * H + 1) * 4L;
+            if (len < expected) {
+                throw new IllegalStateException("heads.bin too short: " + len + " < " + expected);
+            }
+            headsMap = raf.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, len);
         }
+        headsMap.order(ByteOrder.LITTLE_ENDIAN);
+        FloatBuffer fb = headsMap.asFloatBuffer();
+        int p = 0;
+        textEmb = slice(fb, p, TEXT_VOCAB * H); p += TEXT_VOCAB * H;
+        audioEmb = slice(fb, p, NVQ * AUDIO_VOCAB * H); p += NVQ * AUDIO_VOCAB * H;
+        xvecW = slice(fb, p, H * 192); p += H * 192;
+        xvecB = slice(fb, p, H); p += H;
+        lnW = slice(fb, p, H); p += H;
+        lnB = slice(fb, p, H); p += H;
+        lnEps = fb.get(p);
+        tr("heads: mapped " + (len / 1048576L) + "MB");
+    }
+
+    /** A read-only view over a region of the mapped file; no heap copy. */
+    private static FloatBuffer slice(FloatBuffer src, int offset, int length) {
+        FloatBuffer d = src.duplicate();
+        d.position(offset);
+        d.limit(offset + length);
+        return d.slice();
+    }
+
+    /** Copies one H-long row out of a mapped table into dst at dstOff. */
+    private static void getRow(FloatBuffer table, int row, float[] dst, int dstOff) {
+        FloatBuffer d = table.duplicate();
+        d.position(row * H);
+        d.get(dst, dstOff, H);
+    }
+
+    private static void getRow(FloatBuffer table, int row, float[] dst) {
+        getRow(table, row, dst, 0);
+    }
+
+    private OrtSession openSession(String name) throws Exception {
+        File f = new File(onnxDir, name);
+        if (!f.isFile()) f = new File(codecDir, name);
+        return env.createSession(f.getAbsolutePath(), opts);
+    }
+
+    private static void closeQuietly(OrtSession s) {
+        if (s != null) try { s.close(); } catch (Exception ignored) {}
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -159,16 +193,16 @@ public final class VieneuEngine {
     private float[] speakerAnchor(float[] emb192) {
         float[] f = new float[H];
         for (int h = 0; h < H; h++) {
-            float s = xvecB[h];
+            float s = xvecB.get(h);
             int off = h * 192;
-            for (int k = 0; k < 192; k++) s += xvecW[off + k] * emb192[k];
+            for (int k = 0; k < 192; k++) s += xvecW.get(off + k) * emb192[k];
             f[h] = s;
         }
         double mean = 0; for (float x : f) mean += x; mean /= H;
         double var = 0; for (float x : f) { double d = x - mean; var += d * d; } var /= H;
         double inv = 1.0 / Math.sqrt(var + lnEps);
         float[] a = new float[H];
-        for (int h = 0; h < H; h++) a[h] = (float) ((f[h] - mean) * inv) * lnW[h] + lnB[h];
+        for (int h = 0; h < H; h++) a[h] = (float) ((f[h] - mean) * inv) * lnW.get(h) + lnB.get(h);
         return a;
     }
 
@@ -193,12 +227,12 @@ public final class VieneuEngine {
 
     private float[] embedRow(long[] row, float[] anchor) {
         float[] e = new float[H];
-        System.arraycopy(textEmb, (int) row[0] * H, e, 0, H);
+        getRow(textEmb, (int) row[0], e);
         for (int ch = 0; ch < NVQ; ch++) {
             long id = row[ch + 1];
             if (id != AUDIO_PAD) {
                 int base = (ch * AUDIO_VOCAB + (int) id) * H;
-                for (int h = 0; h < H; h++) e[h] += audioEmb[base + h];
+                for (int h = 0; h < H; h++) e[h] += audioEmb.get(base + h);
             }
         }
         if (anchor != null) for (int h = 0; h < H; h++) e[h] += anchor[h];
@@ -217,7 +251,7 @@ public final class VieneuEngine {
         for (int v = 0; v < AUDIO_VOCAB; v++) {
             int off = base + v * H;
             float s = 0;
-            for (int h = 0; h < H; h++) s += vec[h] * audioEmb[off + h];
+            for (int h = 0; h < H; h++) s += vec[h] * audioEmb.get(off + h);
             idxBuf[v] = s;
         }
         if (p.repPen != 1f && hist != null && hist.size(ch) > 0) {
@@ -288,7 +322,7 @@ public final class VieneuEngine {
         int[] codes = new int[NVQ];
         float[] tok2 = new float[2 * H];
         System.arraycopy(h, 0, tok2, 0, H);
-        System.arraycopy(textEmb, (int) SGS * H, tok2, H, H);
+        getRow(textEmb, (int) SGS, tok2, H);
         Map<String, OnnxTensor> in = new HashMap<>();
         OnnxTensor epk = emptyPast(), epv = emptyPast();
         in.put("token_emb", ft(tok2, 1, 2, H));
@@ -305,7 +339,7 @@ public final class VieneuEngine {
 
         for (int ch = 1; ch < NVQ; ch++) {
             float[] emb = new float[H];
-            System.arraycopy(audioEmb, (ch - 1) * AUDIO_VOCAB * H + codes[ch - 1] * H, emb, 0, H);
+            getRow(audioEmb, (ch - 1) * AUDIO_VOCAB + codes[ch - 1], emb);
             Map<String, OnnxTensor> in2 = new HashMap<>();
             in2.put("token_emb", ft(emb, 1, 1, H));
             in2.put("position_ids", lt(new long[]{ch + 1}, 1, 1));
@@ -324,7 +358,7 @@ public final class VieneuEngine {
         float[] tl = new float[TEXT_VOCAB];
         for (int v = 0; v < TEXT_VOCAB; v++) {
             int off = v * H; float s = 0;
-            for (int i = 0; i < H; i++) s += slot0[i] * textEmb[off + i];
+            for (int i = 0; i < H; i++) s += slot0[i] * textEmb.get(off + i);
             tl[v] = s;
         }
         int am = 0; for (int v = 1; v < TEXT_VOCAB; v++) if (tl[v] > tl[am]) am = v;
@@ -356,11 +390,32 @@ public final class VieneuEngine {
         tr("synth: prefill done");
         float[] hid = readF(T(cur, "hidden"));
         float[] h = Arrays.copyOfRange(hid, (T - 1) * H, T * H);
+        // Copy the KV cache out of the prefill session and release it before the
+        // decode session opens: both graphs reference the same 99 MB backbone
+        // weights, and a 32-bit process cannot hold two copies at once.
+        long[][] kvShape = new long[L][];
+        float[][] kvData = new float[L * 2][];
+        for (int i = 0; i < L; i++) {
+            OnnxTensor k = T(cur, "present_k_" + i);
+            OnnxTensor v = T(cur, "present_v_" + i);
+            kvShape[i] = k.getInfo().getShape();
+            kvData[i * 2] = readF(k);
+            kvData[i * 2 + 1] = readF(v);
+        }
+        cur.close();
+        closeQuietly(sPre);
+        sPre = null;
+        tr("synth: prefill released");
+        mem("synth: after-prefill");
+
+        sDec = openSession("vieneu_decode_step.onnx");
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
-            pk[i] = T(cur, "present_k_" + i);
-            pv[i] = T(cur, "present_v_" + i);
+            pk[i] = OnnxTensor.createTensor(env, FloatBuffer.wrap(kvData[i * 2]), kvShape[i]);
+            pv[i] = OnnxTensor.createTensor(env, FloatBuffer.wrap(kvData[i * 2 + 1]), kvShape[i]);
         }
+        kvData = null;
+        tr("synth: decode session open");
 
         Hist hist = (p.repPen != 1f) ? new Hist(NVQ, p.repWindow) : null;
         List<int[]> frames = new ArrayList<>();
@@ -396,6 +451,9 @@ public final class VieneuEngine {
             cur = dr; pk = npk; pv = npv;
         }
         cur.close();
+        // Release the decode graph before the codec graph loads.
+        closeQuietly(sDec);
+        sDec = null;
         tr("synth: ar done frames=" + frames.size());
         mem("synth: before-codec");
         float[] out = decodeCodes(frames);
@@ -406,10 +464,11 @@ public final class VieneuEngine {
     /** Releases the ONNX sessions. The engine cannot be used afterwards. */
     public void close() {
         closed = true;
-        try { sPre.close(); } catch (Exception ignored) {}
-        try { sDec.close(); } catch (Exception ignored) {}
-        try { sAc.close(); } catch (Exception ignored) {}
-        try { sCodec.close(); } catch (Exception ignored) {}
+        closeQuietly(sPre); sPre = null;
+        closeQuietly(sDec); sDec = null;
+        closeQuietly(sAc); sAc = null;
+        closeQuietly(sCodec); sCodec = null;
+        try { opts.close(); } catch (Exception ignored) {}
         try { g2p.close(); } catch (Exception ignored) {}
     }
 
@@ -428,6 +487,7 @@ public final class VieneuEngine {
         Map<String, OnnxTensor> in = new HashMap<>();
         in.put("audio_codes", it(codes, 1, T, NVQ));
         in.put("audio_code_lengths", it(lens, 1));
+        sCodec = openSession("moss_audio_tokenizer_decode_full.onnx");
         OrtSession.Result r = sCodec.run(in);
         tr("synth: codec done");
         closeAll(in);
@@ -441,6 +501,8 @@ public final class VieneuEngine {
             wav[i] = s / ch;
         }
         r.close();
+        closeQuietly(sCodec);
+        sCodec = null;
         return wav;
     }
 

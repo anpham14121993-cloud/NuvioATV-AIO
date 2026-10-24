@@ -48,6 +48,10 @@ class VieneuNarrationEngine(
         const val PREFETCH_PACE_MS = 300L
         const val MAX_DISK_BYTES = 256L * 1024L * 1024L
         const val OFFLINE_MIN_AVAIL_MB = 300L
+        // 32-bit processes get a much smaller heap; the mapped heads file and the
+        // ONNX weights are native, but the KV cache and audio buffers still land
+        // in the Java heap, so require a sane memory class before loading.
+        const val OFFLINE_MIN_MEMORY_CLASS_MB = 128
         const val MALE = "Adam"
         const val FEMALE = "Thùy Dung"
     }
@@ -248,9 +252,16 @@ class VieneuNarrationEngine(
                 if (mem != null) {
                     val availMb = mem.availMem / 1048576L
                     val totalMb = mem.totalMem / 1048576L
-                    stage("mem: avail=${availMb}M total=${totalMb}M low=${mem.lowMemory}")
+                    val classMb = appContext.applicationInfo.memoryClass.toLong()
+                    stage("mem: avail=${availMb}M total=${totalMb}M class=${classMb}M low=${mem.lowMemory}")
                     if (availMb < OFFLINE_MIN_AVAIL_MB) {
                         loadError = "low-memory(${availMb}M)"
+                        stage("load: SKIP $loadError")
+                        onStatus(NarrationEngineStatus.FAILED)
+                        return null
+                    }
+                    if (classMb in 1 until OFFLINE_MIN_MEMORY_CLASS_MB) {
+                        loadError = "small-heap(${classMb}M)"
                         stage("load: SKIP $loadError")
                         onStatus(NarrationEngineStatus.FAILED)
                         return null
