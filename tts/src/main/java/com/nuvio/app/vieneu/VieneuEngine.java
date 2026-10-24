@@ -25,7 +25,7 @@ public final class VieneuEngine {
 
     /** Optional trace sink installed by the app (never throws). */
     public static volatile java.util.function.Consumer<String> TRACE = null;
-    private static void tr(String msg) {
+    static void tr(String msg) {
         java.util.function.Consumer<String> t = TRACE;
         if (t != null) { try { t.accept(msg); } catch (Throwable ignored) {} }
     }
@@ -40,7 +40,7 @@ public final class VieneuEngine {
     private static final long AUDIO_PAD = 1024, TPS = 3, TPE = 4, SGS = 5, EOS_SPEECH = 6, REF_SLOT = 7;
     private static final int TEXT_VOCAB = 419, AUDIO_VOCAB = 1024, STYLE_ID = 16;
 
-    private final OrtEnvironment env = OrtEnvironment.getEnvironment();
+    private final OrtEnvironment env;
     private final OrtSession sPre, sDec, sAc, sCodec;
     private final BpeTokenizer tok;
     private final G2P g2p;
@@ -63,6 +63,10 @@ public final class VieneuEngine {
 
     public VieneuEngine(File modelDir, File headsBin, String tokenizerJson,
                         String g2pBin, int threads) throws Exception {
+        tr("ctor: env start");
+        env = OrtEnvironment.getEnvironment();
+        tr("ctor: env ok " + env);
+        tr("ctor: options start");
         OrtSession.SessionOptions o = new OrtSession.SessionOptions();
         o.setIntraOpNumThreads(Math.max(1, threads));
         o.setInterOpNumThreads(1);
@@ -71,16 +75,33 @@ public final class VieneuEngine {
         o.setMemoryPatternOptimization(false);
         o.setCPUArenaAllocator(false);
         o.addConfigEntry("session.use_device_allocator_for_initializers", "1");
+        tr("ctor: options ok threads=" + Math.max(1, threads));
         File onnx = new File(modelDir, "onnx_int8");
         File codec = new File(modelDir, "codec");
+        tr("ctor: prefill start");
         sPre = env.createSession(new File(onnx, "vieneu_prefill.onnx").getAbsolutePath(), o);
+        tr("ctor: prefill ok");
+        tr("ctor: decode start");
         sDec = env.createSession(new File(onnx, "vieneu_decode_step.onnx").getAbsolutePath(), o);
+        tr("ctor: decode ok");
+        tr("ctor: acoustic start");
         sAc = env.createSession(new File(onnx, "vieneu_acoustic_cached.onnx").getAbsolutePath(), o);
+        tr("ctor: acoustic ok");
+        tr("ctor: codec start");
         sCodec = env.createSession(new File(codec, "moss_audio_tokenizer_decode_full.onnx").getAbsolutePath(), o);
+        tr("ctor: codec ok");
+        mem("ctor: sessions");
 
+        tr("ctor: heads start");
         loadHeads(headsBin);
+        tr("ctor: heads ok");
+        tr("ctor: tokenizer start");
         tok = new BpeTokenizer(tokenizerJson);
+        tr("ctor: tokenizer ok");
+        tr("ctor: g2p start");
         g2p = new G2P(g2pBin);
+        tr("ctor: g2p ok");
+        tr("ctor: done");
     }
 
     private void loadHeads(File f) throws Exception {

@@ -262,6 +262,12 @@ class VieneuNarrationEngine(
                 val tokJson = readText(File(base, "tokenizer.json"))
                 val g2p = File(base, "sea_g2p.bin").absolutePath
                 Log.i(TAG, "engine: load start")
+                runCatching {
+                    val dir = File(appContext.applicationInfo.nativeLibraryDir)
+                    val libs = listOf("libonnxruntime.so", "libonnxruntime4j_jni.so", "libsea_g2p_rs.so", "libg2pjni.so")
+                        .joinToString(" ") { n -> "$n=${File(dir, n).let { if (it.exists()) it.length() / 1024 else -1 }}k" }
+                    stage("libs: $libs")
+                }
                 stage("load: sessions")
                 VieneuEngine.TRACE = java.util.function.Consumer { msg ->
                     Log.i(TAG, msg)
