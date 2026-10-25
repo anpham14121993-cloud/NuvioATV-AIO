@@ -385,6 +385,8 @@ public final class VieneuEngine {
 
         Map<String, OnnxTensor> pin = new HashMap<>();
         pin.put("inputs_embeds", ft(prompt, 1, T, H));
+        tr("synth: prefill session open");
+        sPre = openSession("vieneu_prefill.onnx");
         OrtSession.Result cur = sPre.run(pin);
         closeAll(pin);
         tr("synth: prefill done");
