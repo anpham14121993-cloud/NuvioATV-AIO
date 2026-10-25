@@ -33,7 +33,28 @@ public final class VieneuEngine {
         Runtime r = Runtime.getRuntime();
         long usedMb = (r.totalMemory() - r.freeMemory()) / 1048576L;
         long maxMb = r.maxMemory() / 1048576L;
-        tr(tag + " mem=" + usedMb + "/" + maxMb + "MB");
+        tr(tag + " mem=" + usedMb + "/" + maxMb + "MB" + procMem());
+    }
+
+    /**
+     * Real resident and virtual size of the whole process from /proc/self/statm.
+     *
+     * The Java heap numbers above say nothing about the ONNX runtime's own
+     * mappings, and Debug.getNativeHeapAllocatedSize only counts malloc'd native
+     * memory - neither sees the mmap'd 99 MB backbone or ORT's arenas. On a
+     * 32-bit box that is exactly where the room runs out, so the real RSS and
+     * VmSize have to be in the log to tell "out of memory" from "native crash".
+     */
+    private static String procMem() {
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/self/statm"))) {
+            String[] f = br.readLine().trim().split("\\s+");
+            long vszMb = Long.parseLong(f[0]) * 4L / 1024L;
+            long rssMb = Long.parseLong(f[1]) * 4L / 1024L;
+            return " rss=" + rssMb + "MB vsz=" + vszMb + "MB";
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     private static final int H = 768, NVQ = 16, L = 12, NH_LOC = 8, HD_LOC = 96;
@@ -407,10 +428,12 @@ public final class VieneuEngine {
         closeQuietly(sAc);
         sAc = null;
         tr("synth: prefill session open");
+        long prefillStart = System.nanoTime();
         sPre = openSession("vieneu_prefill.onnx");
+        tr("synth: prefill loaded in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
         OrtSession.Result cur = sPre.run(pin);
         closeAll(pin);
-        tr("synth: prefill done");
+        tr("synth: prefill done in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
         float[] hid = readF(T(cur, "hidden"));
         float[] h = Arrays.copyOfRange(hid, (T - 1) * H, T * H);
         // Copy the KV cache out of the prefill session and release it before the

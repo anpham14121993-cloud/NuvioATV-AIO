@@ -33,8 +33,16 @@ object NarrationDiag {
             val rt = Runtime.getRuntime()
             val heap = "${(rt.totalMemory() - rt.freeMemory()) / 1048576}M/${rt.maxMemory() / 1048576}M"
             val native = "${Debug.getNativeHeapAllocatedSize() / 1048576}M"
+            // getNativeHeapAllocatedSize only counts malloc'd native memory; it does
+            // not see the ONNX runtime's own mappings, which is where a 32-bit box
+            // actually runs out of address space. /proc/self/statm gives the real
+            // resident size of the whole process.
+            val rss = runCatching {
+                val f2 = java.io.File("/proc/self/statm").readText().trim().split("\\s+")
+                "${f2[1].toLong() * 4 / 1024}M"
+            }.getOrDefault("?")
             val stamp = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis())
-            f.appendText("$stamp $heap j/$native n $message\n")
+            f.appendText("$stamp $heap j/$native n rss=$rss $message\n")
         }
     }
 
@@ -96,6 +104,10 @@ object NarrationDiag {
                 append(context, logcatFile(context), "SIGNAL-END")
             }
             hits.takeLast(20).forEach { append(context, logcatFile(context), it.take(190)) }
+            // Always keep the raw tail as well: when the process dies from a
+            // native signal the line that names it can slip past the filter
+            // above, and then the crash is invisible on a box without adb.
+            lines.takeLast(40).forEach { append(context, logcatFile(context), "RAW ${it.take(190)}") }
         }.onFailure {
             log(context, "logcat: failed ${it.javaClass.simpleName}")
         }

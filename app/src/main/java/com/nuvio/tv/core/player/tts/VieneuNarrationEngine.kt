@@ -256,6 +256,22 @@ class VieneuNarrationEngine(
         play(pcm, r)
     }
 
+    /**
+     * CPU features from /proc/cpuinfo. The int8 ONNX kernels (MatMulInteger) are
+     * the first thing that executes a vector instruction, so an old ARMv7 core
+     * without NEON dies there with SIGILL - right after "prefill session open"
+     * and with no Java trace. Logging the features tells that apart from an
+     * out-of-memory kill, which looks identical from the outside.
+     */
+    private fun cpuFeatures(): String = runCatching {
+        val line = File("/proc/cpuinfo").readLines().firstOrNull { it.startsWith("Features") }
+            ?: return@runCatching "no-Features-line"
+        val f = line.substringAfter(":").trim()
+        val want = listOf("neon", "vfpv3", "vfpv4", "idiva", "asimd", "dotprod", "i8mm")
+        val have = want.filter { f.contains(it) }
+        (if (have.isEmpty()) "none-of:" else "") + have.joinToString(",")
+    }.getOrDefault("?")
+
     private fun ensureEngine(): VieneuEngine? {
         engine?.let { return it }
         synchronized(loadLock) {
@@ -266,6 +282,7 @@ class VieneuNarrationEngine(
                     "abi: ${Build.SUPPORTED_ABIS.joinToString(",")} " +
                         "64bit=${Process.is64Bit()} sdk=${Build.VERSION.SDK_INT}"
                 )
+                stage("cpu: ${cpuFeatures()}")
                 val mem = runCatching {
                     val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                     val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
