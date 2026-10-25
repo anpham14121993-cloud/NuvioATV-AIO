@@ -47,11 +47,20 @@ class VieneuNarrationEngine(
         const val MAX_CACHE = 32
         const val PREFETCH_PACE_MS = 300L
         const val MAX_DISK_BYTES = 256L * 1024L * 1024L
-        const val OFFLINE_MIN_AVAIL_MB = 300L
+        // The engine's measured peak resident footprint is ~170 MB, so that is
+        // what the guard has to protect. It used to ask for 300 MB free, which a
+        // 2 GB box playing a film rarely has - the engine then refused to load
+        // and fell back to the system voice for no good reason.
+        const val OFFLINE_MIN_AVAIL_MB = 180L
         // 32-bit processes get a much smaller heap; the mapped heads file and the
         // ONNX weights are native, but the KV cache and audio buffers still land
         // in the Java heap, so require a sane memory class before loading.
         const val OFFLINE_MIN_MEMORY_CLASS_MB = 128
+        // Small boxes: keep the PCM cache and the on-disk cache short so the
+        // engine is not competing with the player for memory or storage.
+        const val LOW_RAM_MAX_CACHE = 6
+        const val LOW_RAM_MAX_DISK_BYTES = 48L * 1024L * 1024L
+        const val LOW_RAM_TOTAL_MB = 2560L
         const val MALE = "Adam"
         const val FEMALE = "Thùy Dung"
     }
@@ -104,6 +113,19 @@ class VieneuNarrationEngine(
 
     private val cache = LinkedHashMap<String, FloatArray>(64, 0.75f, true)
     private val cacheLock = Any()
+
+    /** True on boxes with little RAM, where the caches must stay short. */
+    private val lowRam: Boolean by lazy {
+        val totalMb = runCatching {
+            val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            info.totalMem / 1048576L
+        }.getOrDefault(Long.MAX_VALUE)
+        totalMb < LOW_RAM_TOTAL_MB
+    }
+
+    private val maxCacheEntries: Int get() = if (lowRam) LOW_RAM_MAX_CACHE else MAX_CACHE
+    private val maxDiskBytes: Long get() = if (lowRam) LOW_RAM_MAX_DISK_BYTES else MAX_DISK_BYTES
 
     private data class Req(
         val seq: Int,
@@ -256,6 +278,7 @@ class VieneuNarrationEngine(
                         (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass
                     }.getOrDefault(0).toLong()
                     stage("mem: avail=${availMb}M total=${totalMb}M class=${classMb}M low=${mem.lowMemory}")
+                    stage("mem: lowRam=$lowRam cache=${maxCacheEntries} disk=${maxDiskBytes / 1048576L}M")
                     if (availMb < OFFLINE_MIN_AVAIL_MB) {
                         loadError = "low-memory(${availMb}M)"
                         stage("load: SKIP $loadError")
@@ -394,10 +417,10 @@ class VieneuNarrationEngine(
         runCatching {
             val files = diskCacheDir.listFiles() ?: return
             var total = files.sumOf { it.length() }
-            if (total <= MAX_DISK_BYTES) return
+            if (total <= maxDiskBytes) return
             files.sortBy { it.lastModified() }
             for (f in files) {
-                if (total <= MAX_DISK_BYTES) break
+                if (total <= maxDiskBytes) break
                 val len = f.length()
                 if (f.delete()) total -= len
             }
@@ -602,7 +625,7 @@ class VieneuNarrationEngine(
     private fun putCache(key: String, value: FloatArray) {
         synchronized(cacheLock) {
             cache[key] = value
-            while (cache.size > MAX_CACHE) {
+            while (cache.size > maxCacheEntries) {
                 val it = cache.keys.iterator()
                 it.next()
                 it.remove()
