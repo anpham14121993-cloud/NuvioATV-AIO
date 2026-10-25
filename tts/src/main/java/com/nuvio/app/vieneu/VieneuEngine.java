@@ -49,7 +49,11 @@ public final class VieneuEngine {
     private final OrtSession.SessionOptions opts;
     private final File onnxDir, codecDir;
     private final BpeTokenizer tok;
-    private final G2P g2p;
+    // The G2P dictionary maps 63 MB. It is only needed while phonemizing, so it
+    // is closed again before the ONNX weights load - a 32-bit process cannot
+    // hold both at once.
+    private G2P g2p;
+    private final String g2pPath;
     private final Random rnd = new Random(20261016L);
     private boolean lastEos;
     private volatile boolean closed;
@@ -86,11 +90,8 @@ public final class VieneuEngine {
         tr("ctor: options ok threads=" + Math.max(1, threads));
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
-        // Only the small acoustic graph stays resident; it is used on every AR
-        // frame and does not share the backbone weights.
-        tr("ctor: acoustic call");
-        sAc = openSession("vieneu_acoustic_cached.onnx");
-        tr("ctor: acoustic ok");
+        // No ONNX session is opened here: the engine load itself must stay small
+        // on a 32-bit box. Every graph is opened when its stage needs it.
         mem("ctor: sessions");
 
         tr("ctor: heads start");
@@ -100,6 +101,7 @@ public final class VieneuEngine {
         tok = new BpeTokenizer(tokenizerJson);
         tr("ctor: tokenizer ok");
         tr("ctor: g2p start");
+        g2pPath = g2pBin;
         g2p = new G2P(g2pBin);
         tr("ctor: g2p ok");
         tr("ctor: done");
@@ -369,8 +371,12 @@ public final class VieneuEngine {
     // ── public synthesis ────────────────────────────────────────────────────────
     public float[] synthesize(String text, float[] speakerEmb, int[][] refCodes, Params p) throws Exception {
         mem("synth: before-g2p");
+        if (g2p == null) g2p = new G2P(g2pPath);
         String phonemes = g2p.phonemize(text);
         tr("synth: g2p ok len=" + (phonemes == null ? -1 : phonemes.length()));
+        // Release the 63 MB dictionary before the ONNX weights load.
+        g2p.close();
+        g2p = null;
         mem("synth: after-g2p");
         return synthesizePhonemes(phonemes, speakerEmb, refCodes, p);
     }
@@ -385,6 +391,10 @@ public final class VieneuEngine {
 
         Map<String, OnnxTensor> pin = new HashMap<>();
         pin.put("inputs_embeds", ft(prompt, 1, T, H));
+        // Free the acoustic graph while the 99 MB backbone loads: together they
+        // are more address space than a 32-bit process has.
+        closeQuietly(sAc);
+        sAc = null;
         tr("synth: prefill session open");
         sPre = openSession("vieneu_prefill.onnx");
         OrtSession.Result cur = sPre.run(pin);
@@ -410,6 +420,8 @@ public final class VieneuEngine {
         tr("synth: prefill released");
         mem("synth: after-prefill");
 
+        sAc = openSession("vieneu_acoustic_cached.onnx");
+        tr("synth: acoustic reopened");
         sDec = openSession("vieneu_decode_step.onnx");
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
@@ -471,7 +483,7 @@ public final class VieneuEngine {
         closeQuietly(sAc); sAc = null;
         closeQuietly(sCodec); sCodec = null;
         try { opts.close(); } catch (Exception ignored) {}
-        try { g2p.close(); } catch (Exception ignored) {}
+        if (g2p != null) try { g2p.close(); } catch (Exception ignored) {}
     }
 
     private static int frameCap(String phonemes, int maxFrames) {
