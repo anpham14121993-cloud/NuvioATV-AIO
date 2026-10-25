@@ -87,6 +87,15 @@ public final class VieneuEngine {
         // 32-bit boxes also skip the graph optimizer, the quantized graph runs
         // as exported.
         opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        // Prepacking repacks every weight into a matmul-friendly layout at load
+        // time, which duplicates the whole 99 MB backbone in memory. On a 32-bit
+        // box that alone is the difference between loading and dying: measured
+        // 123.7 MB resident with prepacking on vs 0.8 MB with it off, for
+        // identical outputs. The graph is int8 and runs unoptimized anyway.
+        opts.addConfigEntry("session.disable_prepacking", "1");
+        // The arena keeps freed blocks in a pool instead of returning them. On a
+        // 32-bit process that pool is address space we cannot get back.
+        opts.setCPUArenaAllocator(false);
         tr("ctor: options ok threads=" + Math.max(1, threads));
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
