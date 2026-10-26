@@ -105,9 +105,14 @@ public final class VieneuEngine {
         opts.setMemoryPatternOptimization(false);
         // The CPU arena stays enabled: disabling it makes ORT free initializers
         // through the default allocator and crashed while loading the int8 graph.
-        // 32-bit boxes also skip the graph optimizer, the quantized graph runs
-        // as exported.
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        // Run ORT's basic optimizer: it fuses the exported int8
+        // DynamicQuantizeLinear/MatMulInteger chains into the quantized kernels
+        // instead of leaving 84 separate MatMulInteger nodes. Measured on the
+        // real prefill graph (T=89, prepacking off): 221 ms with the optimizer
+        // off vs 90 ms with BASIC_OPT, for ~+14 MB of peak address space and no
+        // extra resident weights. Without it the ARMv7 prefill took long enough
+        // to look like a crash.
+        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
         // Prepacking repacks every weight into a matmul-friendly layout at load
         // time, which duplicates the whole 99 MB backbone in memory. On a 32-bit
         // box that alone is the difference between loading and dying: measured
