@@ -263,14 +263,16 @@ class VieneuNarrationEngine(
      * and with no Java trace. Logging the features tells that apart from an
      * out-of-memory kill, which looks identical from the outside.
      */
-    private fun cpuFeatures(): String = runCatching {
-        val line = File("/proc/cpuinfo").readLines().firstOrNull { it.startsWith("Features") }
-            ?: return@runCatching "no-Features-line"
-        val f = line.substringAfter(":").trim()
-        val want = listOf("neon", "vfpv3", "vfpv4", "idiva", "asimd", "dotprod", "i8mm")
-        val have = want.filter { f.contains(it) }
-        (if (have.isEmpty()) "none-of:" else "") + have.joinToString(",")
-    }.getOrDefault("?")
+    private val cpuFeatures: String by lazy {
+        runCatching {
+            val line = File("/proc/cpuinfo").readLines().firstOrNull { it.startsWith("Features") }
+                ?: return@runCatching "no-Features-line"
+            val f = line.substringAfter(":").trim()
+            val want = listOf("neon", "vfpv3", "vfpv4", "idiva", "asimd", "dotprod", "i8mm")
+            val have = want.filter { f.contains(it) }
+            (if (have.isEmpty()) "none-of:" else "") + have.joinToString(",")
+        }.getOrDefault("?")
+    }
 
     private fun ensureEngine(): VieneuEngine? {
         engine?.let { return it }
@@ -282,7 +284,8 @@ class VieneuNarrationEngine(
                     "abi: ${Build.SUPPORTED_ABIS.joinToString(",")} " +
                         "64bit=${Process.is64Bit()} sdk=${Build.VERSION.SDK_INT}"
                 )
-                stage("cpu: ${cpuFeatures()}")
+                VieneuEngine.CPU = cpuFeatures
+                stage("cpu: $cpuFeatures")
                 val mem = runCatching {
                     val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                     val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
@@ -326,7 +329,7 @@ class VieneuNarrationEngine(
                 stage("load: sessions")
                 VieneuEngine.TRACE = java.util.function.Consumer { msg ->
                     Log.i(TAG, msg)
-                    stage("ort: ${msg.take(40)}")
+                    stage("ort: ${msg.take(90)}")
                 }
                 val t0 = System.nanoTime()
                 val loader = Thread.currentThread()

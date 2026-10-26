@@ -25,6 +25,8 @@ public final class VieneuEngine {
 
     /** Optional trace sink installed by the app (never throws). */
     public static volatile java.util.function.Consumer<String> TRACE = null;
+    /** CPU feature string from the app, repeated on every prefill heartbeat. */
+    public static volatile String CPU = "?";
     static void tr(String msg) {
         java.util.function.Consumer<String> t = TRACE;
         if (t != null) { try { t.accept(msg); } catch (Throwable ignored) {} }
@@ -46,15 +48,30 @@ public final class VieneuEngine {
      * VmSize have to be in the log to tell "out of memory" from "native crash".
      */
     private static String procMem() {
+        StringBuilder sb = new StringBuilder();
         try (java.io.BufferedReader br = new java.io.BufferedReader(
                 new java.io.FileReader("/proc/self/statm"))) {
             String[] f = br.readLine().trim().split("\\s+");
             long vszMb = Long.parseLong(f[0]) * 4L / 1024L;
             long rssMb = Long.parseLong(f[1]) * 4L / 1024L;
-            return " rss=" + rssMb + "MB vsz=" + vszMb + "MB";
-        } catch (Throwable t) {
-            return "";
-        }
+            sb.append(" rss=").append(rssMb).append("MB vsz=").append(vszMb).append("MB");
+        } catch (Throwable ignored) {}
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/meminfo"))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.startsWith("MemAvailable:")) {
+                    long kb = Long.parseLong(line.replaceAll("[^0-9]", ""));
+                    sb.append(" avail=").append(kb / 1024L).append("MB");
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return sb.toString();
+    }
+
+    private static String phaseName(int p) {
+        return p == 1 ? "load" : p == 2 ? "run" : "kv";
     }
 
     private static final int H = 768, NVQ = 16, L = 12, NH_LOC = 8, HD_LOC = 96;
@@ -432,13 +449,38 @@ public final class VieneuEngine {
         // are more address space than a 32-bit process has.
         closeQuietly(sAc);
         sAc = null;
+        long synthStart = System.nanoTime();
         tr("synth: prefill session open");
-        long prefillStart = System.nanoTime();
-        sPre = openSession("vieneu_prefill.onnx");
-        tr("synth: prefill loaded in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
-        OrtSession.Result cur = sPre.run(pin);
-        closeAll(pin);
-        tr("synth: prefill done in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+        final long prefillStart = System.nanoTime();
+        final java.util.concurrent.atomic.AtomicInteger phase =
+                new java.util.concurrent.atomic.AtomicInteger(1);
+        final java.util.concurrent.atomic.AtomicBoolean hbDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        // Nothing is written between "prefill session open" and the first result
+        // of the run, so a slow load and a slow run look identical on screen.
+        // This beat keeps the narration dialog's tail moving with the phase.
+        Thread hb = new Thread(() -> {
+            for (int i = 1; i <= 120 && !hbDone.get(); i++) {
+                try { Thread.sleep(1500); } catch (InterruptedException ie) { return; }
+                if (hbDone.get()) return;
+                long ms = (System.nanoTime() - prefillStart) / 1000000L;
+                tr("hb " + (ms / 1000) + "s " + phaseName(phase.get()) + " " + CPU);
+            }
+        }, "vieneu-prefill-hb");
+        hb.setDaemon(true);
+        hb.start();
+        OrtSession.Result cur;
+        try {
+            sPre = openSession("vieneu_prefill.onnx");
+            tr("synth: prefill loaded in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+            phase.set(2);
+            cur = sPre.run(pin);
+            tr("synth: prefill done in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+        } finally {
+            closeAll(pin);
+            hbDone.set(true);
+            hb.interrupt();
+        }
         float[] hid = readF(T(cur, "hidden"));
         float[] h = Arrays.copyOfRange(hid, (T - 1) * H, T * H);
         // Copy the KV cache out of the prefill session and release it before the
@@ -510,6 +552,8 @@ public final class VieneuEngine {
         tr("synth: ar done frames=" + frames.size());
         mem("synth: before-codec");
         float[] out = decodeCodes(frames);
+        tr("synth: total " + (System.nanoTime() - synthStart) / 1000000L + "ms frames=" + frames.size()
+                + " samples=" + out.length);
         mem("synth: after-codec");
         return out;
     }
@@ -540,7 +584,9 @@ public final class VieneuEngine {
         Map<String, OnnxTensor> in = new HashMap<>();
         in.put("audio_codes", it(codes, 1, T, NVQ));
         in.put("audio_code_lengths", it(lens, 1));
+        long codecStart = System.nanoTime();
         sCodec = openSession("moss_audio_tokenizer_decode_full.onnx");
+        tr("synth: codec loaded in " + (System.nanoTime() - codecStart) / 1000000L + "ms");
         OrtSession.Result r = sCodec.run(in);
         tr("synth: codec done");
         closeAll(in);

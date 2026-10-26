@@ -41,8 +41,16 @@ object NarrationDiag {
                 val f2 = java.io.File("/proc/self/statm").readText().trim().split("\\s+")
                 "${f2[1].toLong() * 4 / 1024}M"
             }.getOrDefault("?")
+            // MemAvailable says whether the box is out of RAM right now, which
+            // separates a slow ONNX load from the kernel reclaiming/thrashing.
+            val avail = runCatching {
+                val line = java.io.File("/proc/meminfo").readLines()
+                    .firstOrNull { it.startsWith("MemAvailable:") }
+                val kb = line?.replaceAll("[^0-9]", "")?.toLongOrNull() ?: 0L
+                "${kb / 1024}M"
+            }.getOrDefault("?")
             val stamp = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis())
-            f.appendText("$stamp $heap j/$native n rss=$rss $message\n")
+            f.appendText("$stamp $heap j/$native n rss=$rss avail=$avail $message\n")
         }
     }
 

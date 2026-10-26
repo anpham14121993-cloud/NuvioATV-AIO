@@ -221,7 +221,10 @@ private fun NarrationDiagText() {
     val text by produceState(initialValue = "") {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             NarrationDiag.captureLogcatBlocking(context)
-            val stages = NarrationDiag.tail(context, 8)
+            // Newest first: the visible top of the 8sp box must be the live
+            // prefill heartbeat, not a line from a minute ago.
+            val stages = NarrationDiag.tail(context, 12).lines()
+                .asReversed().joinToString("\n")
             val crash = NarrationDiag.logcatTail(context, 20)
             if (crash.isBlank()) stages else "$stages\n--- logcat ---\n$crash"
         }
