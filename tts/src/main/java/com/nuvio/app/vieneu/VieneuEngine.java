@@ -120,12 +120,11 @@ public final class VieneuEngine {
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         opts.setMemoryPatternOptimization(false);
-        // Keep the optimizer OFF on 32-bit ARM. BASIC_OPT is 2.5x faster on
-        // the prefill graph on x86 (90 ms vs 221 ms), but the graph rewrite it
-        // runs over this int8 model takes the process down a few seconds into
-        // the first prefill on an ARMv7 box - the crash 4d23393 worked around.
-        // The prefill heartbeat now measures what NO_OPT actually costs on the
-        // real device instead of guessing from the x86 numbers.
+        // Optimization stays OFF while the release crash is being isolated:
+        // the real cause was R8 renaming ai.onnxruntime classes (see
+        // tts/consumer-rules.pro), not the optimizer. NO_OPT runs the prefill
+        // ~2.5x slower on x86 (221 ms vs 90 ms), so once the 7.5.38 build
+        // confirms the SIGABRT is gone, BASIC_OPT can be measured again.
         opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         // Prepacking repacks every weight into a matmul-friendly layout at load
         // time, which duplicates the whole 99 MB backbone in memory. On a 32-bit
