@@ -46,7 +46,7 @@ object NarrationDiag {
             val avail = runCatching {
                 val line = java.io.File("/proc/meminfo").readLines()
                     .firstOrNull { it.startsWith("MemAvailable:") }
-                val kb = line?.replaceAll("[^0-9]", "")?.toLongOrNull() ?: 0L
+                val kb = line?.replace(Regex("[^0-9]"), "")?.toLongOrNull() ?: 0L
                 "${kb / 1024}M"
             }.getOrDefault("?")
             val stamp = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis())
