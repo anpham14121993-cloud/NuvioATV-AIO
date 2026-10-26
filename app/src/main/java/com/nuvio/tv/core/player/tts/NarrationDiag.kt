@@ -15,12 +15,15 @@ import java.io.File
 object NarrationDiag {
     private const val FILE_NAME = "narration_diag.log"
     private const val LOGCAT_FILE = "narration_logcat.log"
+    private const val PREV_FILE = "narration_prev.log"
     private const val MAX_BYTES = 64L * 1024L
     private const val KEEP_LINES = 200
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
 
     private fun logcatFile(context: Context) = File(context.filesDir, LOGCAT_FILE)
+
+    private fun prevFile(context: Context) = File(context.filesDir, PREV_FILE)
 
     @Synchronized
     fun log(context: Context, message: String) {
@@ -53,6 +56,28 @@ object NarrationDiag {
             f.appendText("$stamp $heap j/$native n rss=$rss avail=$avail $message\n")
         }
     }
+
+    /**
+     * Snapshots the tail of the previous process before this one writes its own
+     * "app: create". A native SIGILL/SIGSEGV leaves no Java trace, so this file
+     * is the only record of the stage that killed the last session.
+     */
+    @Synchronized
+    fun preservePrevious(context: Context) {
+        runCatching {
+            val f = file(context)
+            if (!f.exists()) return
+            val keep = f.readLines().takeLast(40)
+            if (keep.isNotEmpty()) {
+                prevFile(context).writeText(keep.joinToString("\n", postfix = "\n"))
+            }
+        }
+    }
+
+    fun prevTail(context: Context, lines: Int = 8): String = runCatching {
+        val f = prevFile(context)
+        if (!f.exists()) "" else f.readLines().takeLast(lines).joinToString("\n")
+    }.getOrDefault("")
 
     fun tail(context: Context, lines: Int = 10): String = runCatching {
         val f = file(context)

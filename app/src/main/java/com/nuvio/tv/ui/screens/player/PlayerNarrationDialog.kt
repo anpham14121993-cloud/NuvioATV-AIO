@@ -225,8 +225,19 @@ private fun NarrationDiagText() {
             // prefill heartbeat, not a line from a minute ago.
             val stages = NarrationDiag.tail(context, 12).lines()
                 .asReversed().joinToString("\n")
+            val prev = NarrationDiag.prevTail(context, 8).lines()
+                .filter { it.isNotBlank() }
+            // A native crash leaves the previous file ending on a heartbeat or
+            // a synth stage; show those lines before the current session so the
+            // last phase of a killed process is visible immediately.
+            val prevLooksCrashed = prev.lastOrNull()?.let {
+                it.contains(" hb ") || it.contains(" synth: ") || it.contains(" CRASH ")
+            } == true
+            val withPrev = if (prevLooksCrashed) {
+                "== LAN TRUOC ==\n" + prev.asReversed().joinToString("\n") + "\n== HIEN TAI ==\n$stages"
+            } else stages
             val crash = NarrationDiag.logcatTail(context, 20)
-            if (crash.isBlank()) stages else "$stages\n--- logcat ---\n$crash"
+            if (crash.isBlank()) withPrev else "$withPrev\n--- logcat ---\n$crash"
         }
     }
     if (text.isBlank()) return

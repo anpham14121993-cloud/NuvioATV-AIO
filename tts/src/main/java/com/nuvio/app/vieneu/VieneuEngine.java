@@ -120,16 +120,13 @@ public final class VieneuEngine {
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         opts.setMemoryPatternOptimization(false);
-        // The CPU arena stays enabled: disabling it makes ORT free initializers
-        // through the default allocator and crashed while loading the int8 graph.
-        // Run ORT's basic optimizer: it fuses the exported int8
-        // DynamicQuantizeLinear/MatMulInteger chains into the quantized kernels
-        // instead of leaving 84 separate MatMulInteger nodes. Measured on the
-        // real prefill graph (T=89, prepacking off): 221 ms with the optimizer
-        // off vs 90 ms with BASIC_OPT, for ~+14 MB of peak address space and no
-        // extra resident weights. Without it the ARMv7 prefill took long enough
-        // to look like a crash.
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
+        // Keep the optimizer OFF on 32-bit ARM. BASIC_OPT is 2.5x faster on
+        // the prefill graph on x86 (90 ms vs 221 ms), but the graph rewrite it
+        // runs over this int8 model takes the process down a few seconds into
+        // the first prefill on an ARMv7 box - the crash 4d23393 worked around.
+        // The prefill heartbeat now measures what NO_OPT actually costs on the
+        // real device instead of guessing from the x86 numbers.
+        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         // Prepacking repacks every weight into a matmul-friendly layout at load
         // time, which duplicates the whole 99 MB backbone in memory. On a 32-bit
         // box that alone is the difference between loading and dying: measured
