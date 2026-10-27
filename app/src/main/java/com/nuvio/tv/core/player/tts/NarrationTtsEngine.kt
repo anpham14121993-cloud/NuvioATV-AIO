@@ -13,8 +13,10 @@ interface NarrationTtsEngine {
 
     /**
      * Synthesizes and plays [text]; work happens off the main thread. A new call
-     * invalidates any in-flight utterance. [ratePercent] speeds playback up to fit
-     * [budgetMs]; [budgetMs] caps playback length.
+     * invalidates any in-flight utterance. [ratePercent] speeds playback up to
+     * fit [budgetMs]. [budgetMs] is advisory: on hardware where synthesis is
+     * slower than playback the engine plays the whole line and lets the next
+     * line cut it, instead of truncating the sentence and leaving silence.
      */
     fun speak(
         text: String,

@@ -47,7 +47,6 @@ class VieneuNarrationEngine(
         const val GAIN = 2.2f
         const val MAX_CACHE = 32
         const val PREFETCH_PACE_MS = 300L
-        const val MIN_PLAY_BUDGET_MS = 4000L
         const val MAX_DISK_BYTES = 256L * 1024L * 1024L
         // The engine's measured peak resident footprint is ~170 MB, so that is
         // what the guard has to protect. It used to ask for 300 MB free, which a
@@ -666,14 +665,11 @@ class VieneuNarrationEngine(
             val frames = boosted.size.coerceAtLeast(written)
             var durationMs = frames.toLong() * 1000L / sr
             if (speed > 1.001f) durationMs = (durationMs / speed).toLong()
-            // The subtitle-window budget exists to avoid overlap when the next
-            // line is ready quickly; the next play() cuts this track anyway.
-            // Cutting to a ~2 s window truncated every sentence's tail on this
-            // box, which sounded like "reads half a sentence, then goes quiet".
-            val budget = r.budgetMs?.coerceAtLeast(MIN_PLAY_BUDGET_MS)
-            if (budget != null && budget in 1 until durationMs) durationMs = budget
-            // Do NOT block the worker here: return immediately so the next cue can be
-            // synthesized/played on time. The track is stopped by a scheduled callback.
+            // Play the whole line. It used to be clamped to one subtitle window
+            // (budgetMs), but synthesis on this box is slower than playback, so
+            // the next line's audio never arrives in time: the clamp only cut
+            // the sentence's tail and left silence in the gap. A newer line's
+            // play() still stops this track the moment its audio is ready.
             val finish = Runnable {
                 if (currentTrack.compareAndSet(track, null)) {
                     runCatching { track.stop() }

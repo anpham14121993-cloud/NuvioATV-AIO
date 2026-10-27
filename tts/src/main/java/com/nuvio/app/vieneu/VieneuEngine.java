@@ -114,6 +114,10 @@ public final class VieneuEngine {
     private final float[] rowBuf = new float[H];
     private final float[] heapV = new float[64];
     private final int[] heapI = new int[64];
+    // Per-line stage timings, reset at the start of the AR loop (synthesis is
+    // serialized on the caller's lock, so these need no synchronization).
+    private long tAcNs, tDecNs, tSmpNs;
+    private int acRuns, decRuns;
 
     public VieneuEngine(File modelDir, File headsBin, String tokenizerJson,
                         String g2pBin, int threads) throws Exception {
@@ -121,9 +125,9 @@ public final class VieneuEngine {
         env = OrtEnvironment.getEnvironment();
         tr("ctor: env ok " + env);
         tr("ctor: options start");
-        opts = newOptions(threads, false);
-        optsPacked = newOptions(threads, true);
-        tr("ctor: options ok threads=" + Math.max(1, threads) + " opt=no_opt");
+        opts = newOptions(threads, false, OrtSession.SessionOptions.OptLevel.NO_OPT);
+        optsPacked = newOptions(threads, true, OrtSession.SessionOptions.OptLevel.BASIC_OPT);
+        tr("ctor: options ok threads=" + Math.max(1, threads) + " prefill/codec=no_opt acoustic/decode=basic+pack");
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
         // No ONNX session is opened here: the engine load itself must stay small
@@ -210,22 +214,27 @@ public final class VieneuEngine {
     }
 
     /**
-     * Graph optimization stays at NO_OPT, as in the last build that did not
-     * crash. 7.5.41 opened all four graphs at movie start with BASIC/EXTENDED
-     * plus prepacking, which killed the app on this 32-bit box before the
-     * first subtitle: each optimized session keeps its own packed copy of the
-     * 99 MB backbone and the new kernels run for the first time there. The
-     * speed fix that remains is session reuse - each graph is still opened
-     * once and kept - without the extra native memory and new kernel paths.
+     * Prefill and codec stay at NO_OPT: their 99 MB / 42 MB weight files are
+     * read once per cue sequence and an optimized session would keep packed
+     * copies of them for the whole film. The acoustic graph gets BASIC_OPT so
+     * ORT packs its int8 weights at session creation instead of repacking them
+     * on every MatMul; it runs 16x per frame, which makes it the hot graph.
+     * It is opened lazily on the first cue, never at movie start, because
+     * opening all four optimized graphs there is what killed 7.5.41.
      */
     private static OrtSession.SessionOptions newOptions(int threads, boolean prepack) throws Exception {
+        return newOptions(threads, prepack, OrtSession.SessionOptions.OptLevel.NO_OPT);
+    }
+
+    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack,
+                                                        OrtSession.SessionOptions.OptLevel level) throws Exception {
         OrtSession.SessionOptions o = new OrtSession.SessionOptions();
         o.setIntraOpNumThreads(Math.max(1, threads));
         o.setInterOpNumThreads(1);
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         o.setMemoryPatternOptimization(false);
-        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        o.setOptimizationLevel(level);
         o.addConfigEntry("session.disable_prepacking", prepack ? "0" : "1");
         // The CPU arena stays enabled. Disabling it frees the initializers
         // through the default allocator, which crashed while loading the int8
@@ -248,6 +257,22 @@ public final class VieneuEngine {
         tr("open: " + name + " done " + (System.nanoTime() - t) / 1000000L + "ms");
         mem("open: " + name);
         return s;
+    }
+
+    /**
+     * Opens a hot graph with packing. If session creation rejects the
+     * optimized graph (Java-visible failure, e.g. an allocation error), fall
+     * back to the plain session so narration keeps working. A native failure
+     * is not catchable; the "open: <graph> start" breadcrumb is what names it
+     * in narration_prev.log.
+     */
+    private OrtSession openFast(String name) throws Exception {
+        try {
+            return openSession(name, optsPacked);
+        } catch (Throwable t) {
+            tr("open: " + name + " packed FAIL " + t.getClass().getSimpleName() + " -> plain");
+            return openSession(name, opts);
+        }
     }
 
     private static void closeQuietly(OrtSession s) {
@@ -447,14 +472,18 @@ public final class VieneuEngine {
         in.put("token_emb", ft(tok2, 1, 2, H));
         in.put("position_ids", lt(new long[]{0, 1}, 1, 2));
         in.put("past_k_0", epk); in.put("past_v_0", epv);
+        long t0 = System.nanoTime();
         OrtSession.Result ar = sAc.run(in);
+        tAcNs += System.nanoTime() - t0; acRuns++;
         closeAll(in);
         float[] ah = readF(T(ar, "hidden"));
         float[] slot0 = Arrays.copyOfRange(ah, 0, H);
         float[] condOut = Arrays.copyOfRange(ah, H, 2 * H);
         OnnxTensor npk = T(ar, "present_k_0");
         OnnxTensor npv = T(ar, "present_v_0");
+        long s0 = System.nanoTime();
         codes[0] = sampleChannel(condOut, 0, p, hist);
+        tSmpNs += System.nanoTime() - s0;
 
         for (int ch = 1; ch < NVQ; ch++) {
             float[] emb = new float[H];
@@ -463,14 +492,18 @@ public final class VieneuEngine {
             in2.put("token_emb", ft(emb, 1, 1, H));
             in2.put("position_ids", lt(new long[]{ch + 1}, 1, 1));
             in2.put("past_k_0", npk); in2.put("past_v_0", npv);
+            long t2 = System.nanoTime();
             OrtSession.Result ar2 = sAc.run(in2);
+            tAcNs += System.nanoTime() - t2; acRuns++;
             closeAll(in2);
             float[] ah2 = readF(T(ar2, "hidden"));
             OnnxTensor npk2 = T(ar2, "present_k_0");
             OnnxTensor npv2 = T(ar2, "present_v_0");
             ar.close();
             ar = ar2; npk = npk2; npv = npv2;
+            long s2 = System.nanoTime();
             codes[ch] = sampleChannel(ah2, ch, p, hist);
+            tSmpNs += System.nanoTime() - s2;
         }
         ar.close();
 
@@ -531,8 +564,8 @@ public final class VieneuEngine {
         // of the run, so a slow load and a slow run look identical on screen.
         // This beat keeps the narration dialog's tail moving with the phase.
         Thread hb = new Thread(() -> {
-            for (int i = 1; i <= 120 && !hbDone.get(); i++) {
-                try { Thread.sleep(1500); } catch (InterruptedException ie) { return; }
+            for (int i = 1; i <= 60 && !hbDone.get(); i++) {
+                try { Thread.sleep(5000); } catch (InterruptedException ie) { return; }
                 if (hbDone.get()) return;
                 long ms = (System.nanoTime() - prefillStart) / 1000000L;
                 tr("hb " + (ms / 1000) + "s " + phaseName(phase.get()) + " " + CPU);
@@ -569,7 +602,8 @@ public final class VieneuEngine {
             if (cur != null) try { cur.close(); } catch (Exception ignored) {}
         }
         if (h == null) throw new IllegalStateException("prefill produced no hidden state");
-        tr("synth: prefill done " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+        long prefillMs = (System.nanoTime() - prefillStart) / 1000000L;
+        tr("synth: prefill done " + prefillMs + "ms");
         mem("synth: after-prefill");
 
         // Do not start the expensive autoregressive loop for a cue that is
@@ -577,9 +611,12 @@ public final class VieneuEngine {
         ensureActive(cancelled, superseded);
 
         // Both hot graphs opened on the first cue survive later cues: their
-        // session setup was paid again on every subtitle line before.
-        if (sAc == null) sAc = openSession("vieneu_acoustic_cached.onnx", optsPacked);
-        if (sDec == null) sDec = openSession("vieneu_decode_step.onnx", optsPacked);
+        // session setup was paid again on every subtitle line before. Only the
+        // small acoustic graph is packed for now: it runs 16x per frame, its
+        // weights are 7 MB, and the "line" log below says whether it or the
+        // 99 MB decode backbone is the bottleneck.
+        if (sAc == null) sAc = openFast("vieneu_acoustic_cached.onnx");
+        if (sDec == null) sDec = openSession("vieneu_decode_step.onnx", opts);
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
             pk[i] = OnnxTensor.createTensor(env, FloatBuffer.wrap(kvData[i * 2]), kvShape[i]);
@@ -591,6 +628,7 @@ public final class VieneuEngine {
         List<int[]> frames = new ArrayList<>();
         int cap = frameCap(phonemes, p.maxFrames);
         long arStart = System.nanoTime();
+        tAcNs = 0; tDecNs = 0; tSmpNs = 0; acRuns = 0; decRuns = 0;
         boolean eos = false;
         tr("synth: ar start cap=" + cap);
         // The first pk/pv are copies of the prefill cache, not owned by a
@@ -619,9 +657,12 @@ public final class VieneuEngine {
                 din.put("position_ids", lt(new long[]{T + t}, 1, 1));
                 for (int i = 0; i < L; i++) { din.put("past_k_" + i, pk[i]); din.put("past_v_" + i, pv[i]); }
                 OrtSession.Result dr;
+                long td = System.nanoTime();
                 try {
                     dr = sDec.run(din);
                 } finally {
+                    tDecNs += System.nanoTime() - td;
+                    decRuns++;
                     // close only inputs we created (inputs_embeds/position_ids); past owned by cur
                     try { din.get("inputs_embeds").close(); } catch (Exception ignored) {}
                     try { din.get("position_ids").close(); } catch (Exception ignored) {}
@@ -655,6 +696,13 @@ public final class VieneuEngine {
         ensureNotCancelled(cancelled);
         tr("synth: ar done frames=" + frames.size() + " eos=" + eos + " cap=" + cap
                 + " " + (System.nanoTime() - arStart) / 1000000L + "ms");
+        // One compact line per cue so the 12-line diag tail still shows the
+        // split between acoustic runs, decode runs and Java sampling.
+        tr("line f=" + frames.size() + " pre=" + prefillMs
+                + " ac=" + tAcNs / 1000000L + "/" + acRuns
+                + " dec=" + tDecNs / 1000000L + "/" + decRuns
+                + " smp=" + tSmpNs / 1000000L
+                + " ar=" + (System.nanoTime() - arStart) / 1000000L + "ms");
         mem("synth: before-codec");
         float[] out = decodeCodes(frames);
         tr("synth: total " + (System.nanoTime() - synthStart) / 1000000L + "ms frames=" + frames.size()
