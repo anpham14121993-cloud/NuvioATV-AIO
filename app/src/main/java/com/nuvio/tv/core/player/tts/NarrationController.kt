@@ -324,6 +324,7 @@ class NarrationController(
     }
 
     fun release() {
+        NarrationDiag.log(appContext, "ctrl: release")
         released = true
         enabled = false
         val e = engine

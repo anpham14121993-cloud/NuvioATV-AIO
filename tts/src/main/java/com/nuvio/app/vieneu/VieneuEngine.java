@@ -87,7 +87,6 @@ public final class VieneuEngine {
     // start. A 32-bit process can hold all four (weights are mmap-backed).
     private OrtSession sPre, sDec, sAc, sCodec;
     private final OrtSession.SessionOptions opts;
-    private final OrtSession.SessionOptions optsPacked;
     private final File onnxDir, codecDir;
     private final BpeTokenizer tok;
     // The G2P dictionary maps 63 MB. It is only needed while phonemizing, so it
@@ -125,9 +124,8 @@ public final class VieneuEngine {
         env = OrtEnvironment.getEnvironment();
         tr("ctor: env ok " + env);
         tr("ctor: options start");
-        opts = newOptions(threads, false, OrtSession.SessionOptions.OptLevel.NO_OPT);
-        optsPacked = newOptions(threads, true, OrtSession.SessionOptions.OptLevel.BASIC_OPT);
-        tr("ctor: options ok threads=" + Math.max(1, threads) + " prefill/codec=no_opt acoustic/decode=basic+pack");
+        opts = newOptions(threads);
+        tr("ctor: options ok threads=" + Math.max(1, threads) + " opt=no_opt");
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
         // No ONNX session is opened here: the engine load itself must stay small
@@ -214,28 +212,23 @@ public final class VieneuEngine {
     }
 
     /**
-     * Prefill and codec stay at NO_OPT: their 99 MB / 42 MB weight files are
-     * read once per cue sequence and an optimized session would keep packed
-     * copies of them for the whole film. The acoustic graph gets BASIC_OPT so
-     * ORT packs its int8 weights at session creation instead of repacking them
-     * on every MatMul; it runs 16x per frame, which makes it the hot graph.
-     * It is opened lazily on the first cue, never at movie start, because
-     * opening all four optimized graphs there is what killed 7.5.41.
+     * Graph optimization stays at NO_OPT. Both attempts to enable ORT's
+     * optimizer on this box (7.5.41: all four graphs at movie start with
+     * BASIC/EXTENDED; 7.5.43: only the 7 MB acoustic graph, opened lazily on
+     * the first cue) took the process down, so the packed int8 kernels are
+     * unusable on this ARMv7 core. Keep the plain kernels and the arena that
+     * 7.5.42 proved stable; the speed work left is session reuse, which is
+     * already done.
      */
-    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack) throws Exception {
-        return newOptions(threads, prepack, OrtSession.SessionOptions.OptLevel.NO_OPT);
-    }
-
-    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack,
-                                                        OrtSession.SessionOptions.OptLevel level) throws Exception {
+    private static OrtSession.SessionOptions newOptions(int threads) throws Exception {
         OrtSession.SessionOptions o = new OrtSession.SessionOptions();
         o.setIntraOpNumThreads(Math.max(1, threads));
         o.setInterOpNumThreads(1);
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         o.setMemoryPatternOptimization(false);
-        o.setOptimizationLevel(level);
-        o.addConfigEntry("session.disable_prepacking", prepack ? "0" : "1");
+        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        o.addConfigEntry("session.disable_prepacking", "1");
         // The CPU arena stays enabled. Disabling it frees the initializers
         // through the default allocator, which crashed while loading the int8
         // graph on a 32-bit Android box (see dc4e97f).
@@ -257,22 +250,6 @@ public final class VieneuEngine {
         tr("open: " + name + " done " + (System.nanoTime() - t) / 1000000L + "ms");
         mem("open: " + name);
         return s;
-    }
-
-    /**
-     * Opens a hot graph with packing. If session creation rejects the
-     * optimized graph (Java-visible failure, e.g. an allocation error), fall
-     * back to the plain session so narration keeps working. A native failure
-     * is not catchable; the "open: <graph> start" breadcrumb is what names it
-     * in narration_prev.log.
-     */
-    private OrtSession openFast(String name) throws Exception {
-        try {
-            return openSession(name, optsPacked);
-        } catch (Throwable t) {
-            tr("open: " + name + " packed FAIL " + t.getClass().getSimpleName() + " -> plain");
-            return openSession(name, opts);
-        }
     }
 
     private static void closeQuietly(OrtSession s) {
@@ -611,11 +588,8 @@ public final class VieneuEngine {
         ensureActive(cancelled, superseded);
 
         // Both hot graphs opened on the first cue survive later cues: their
-        // session setup was paid again on every subtitle line before. Only the
-        // small acoustic graph is packed for now: it runs 16x per frame, its
-        // weights are 7 MB, and the "line" log below says whether it or the
-        // 99 MB decode backbone is the bottleneck.
-        if (sAc == null) sAc = openFast("vieneu_acoustic_cached.onnx");
+        // session setup was paid again on every subtitle line before.
+        if (sAc == null) sAc = openSession("vieneu_acoustic_cached.onnx", opts);
         if (sDec == null) sDec = openSession("vieneu_decode_step.onnx", opts);
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
@@ -719,7 +693,6 @@ public final class VieneuEngine {
         closeQuietly(sAc); sAc = null;
         closeQuietly(sCodec); sCodec = null;
         try { opts.close(); } catch (Exception ignored) {}
-        try { optsPacked.close(); } catch (Exception ignored) {}
         if (g2p != null) try { g2p.close(); } catch (Exception ignored) {}
     }
 
