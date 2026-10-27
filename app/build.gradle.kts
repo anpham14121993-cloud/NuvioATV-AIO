@@ -102,8 +102,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1556
-        versionName = "1.1.0-nt.7.5.40"
+        versionCode = 1557
+        versionName = "1.1.0-nt.7.5.41"
         // Optional -PnuvioAppIdSuffix=.name installs a local test build next to the main app.
         providers.gradleProperty("nuvioAppIdSuffix").orNull?.takeIf { it.isNotBlank() }?.let {
             applicationIdSuffix = it
