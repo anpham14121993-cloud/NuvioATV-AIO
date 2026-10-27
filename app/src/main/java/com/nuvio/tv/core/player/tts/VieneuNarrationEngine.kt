@@ -22,6 +22,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.BooleanSupplier
 
 /**
  * Offline VieNeu-TTS v3 narration engine: synthesizes Vietnamese PCM from the
@@ -239,22 +240,49 @@ class VieneuNarrationEngine(
             r.onResult?.invoke(false, "stale")
             return
         }
+        // A stop or a newer cue while this line is synthesizing must not fall
+        // through to the system voice: that is what made stale sentences play
+        // long after the subtitle had moved on.
+        val myStop = stopToken.get()
         val e = ensureEngine()
+        // Engine load can take seconds; a stop during it must not lead to a
+        // stale line being synthesized or handed to the system voice.
+        if (released || stopToken.get() != myStop) {
+            staleDrop.incrementAndGet()
+            r.onResult?.invoke(false, "stale")
+            return
+        }
         if (e == null) {
             synthFail.incrementAndGet()
             r.onResult?.invoke(false, "model:$loadError")
             onError(r.text, r.rate)
             return
         }
-        val pcm = synth(e, r.text, r.voiceApi)
+        val pcm = synth(e, r.text, r.voiceApi, seq)
         if (pcm == null) {
+            if (isStale(seq, myStop)) {
+                staleDrop.incrementAndGet()
+                r.onResult?.invoke(false, "stale")
+                return
+            }
             synthFail.incrementAndGet()
             r.onResult?.invoke(false, "synth-failed")
             onError(r.text, r.rate)
             return
         }
+        // Only a stop/release discards finished audio. A superseded line still
+        // plays (the newer one cuts it when ready): dropping it as well would
+        // turn a synth that is merely one cue behind into total silence.
+        if (released || stopToken.get() != myStop) {
+            staleDrop.incrementAndGet()
+            r.onResult?.invoke(false, "stale")
+            return
+        }
         play(pcm, r)
     }
+
+    private fun isStale(seq: Int, myStop: Int): Boolean =
+        released || stopToken.get() != myStop || (req?.seq ?: 0) > seq
 
     /**
      * CPU features from /proc/cpuinfo. The int8 ONNX kernels (MatMulInteger) are
@@ -469,8 +497,13 @@ class VieneuNarrationEngine(
         }
     }
 
-    /** Synthesizes PCM (or a cached copy) for [text] in the voice behind [api]. */
-    private fun synth(e: VieneuEngine, text: String, api: String): FloatArray? {
+    /**
+     * Synthesizes PCM (or a cached copy) for [text] in the voice behind [api].
+     *
+     * [seq] ties the work to a playback request so a newer cue can cancel it;
+     * background prefetch keeps the default -1 and is only cancelled on release.
+     */
+    private fun synth(e: VieneuEngine, text: String, api: String, seq: Int = -1): FloatArray? {
         val name = voiceFor(api) ?: return null
         val voice = voices[name] ?: return null
         val key = "$name|$text"
@@ -483,6 +516,18 @@ class VieneuNarrationEngine(
             putCache(key, it)
             return it
         }
+        val myStop = stopToken.get()
+        val cancelled: BooleanSupplier?
+        val superseded: BooleanSupplier?
+        if (seq < 0) {
+            // Background prefetch: yield the engine as soon as a real cue
+            // arrives, so warming the cache never delays a subtitle line.
+            cancelled = BooleanSupplier { released || speakWaiting.get() > 0 }
+            superseded = null
+        } else {
+            cancelled = BooleanSupplier { released || stopToken.get() != myStop }
+            superseded = BooleanSupplier { req?.seq != seq }
+        }
         return try {
             val p = VieneuEngine.Params()
             // ORT sessions are not re-entrant: serialize synthesis so prefetch and
@@ -493,7 +538,11 @@ class VieneuNarrationEngine(
             logMemory("synth: start")
             val wav = synchronized(synthLock) {
                 if (released) return null
-                e.synthesize(text, voice.emb, voice.codes, p)
+                // The request may have been replaced while this worker waited
+                // behind an earlier line: do not pay for a prefill whose audio
+                // can never play.
+                if (seq >= 0 && req?.seq != seq) return null
+                e.synthesize(text, voice.emb, voice.codes, p, cancelled, superseded)
             }
             Log.i(TAG, "synth: ok samples=" + wav.size)
             stage("synth: ok ${wav.size}")
@@ -502,6 +551,12 @@ class VieneuNarrationEngine(
             putCache(key, wav)
             writeDisk(name, text, wav)
             wav
+        } catch (c: VieneuEngine.Cancelled) {
+            // Stopped or replaced mid-synthesis: drop the line silently. The
+            // caller checks isStale() and must not fall back to system TTS.
+            stage("synth: drop " + (c.message ?: "cancelled"))
+            Log.i(TAG, "synth: drop " + (c.message ?: "cancelled"))
+            null
         } catch (t: Throwable) {
             synthFail.incrementAndGet()
             Log.i(TAG, "synth: FAIL " + (t.javaClass.simpleName) + ":" + (t.message?.take(80) ?: ""))

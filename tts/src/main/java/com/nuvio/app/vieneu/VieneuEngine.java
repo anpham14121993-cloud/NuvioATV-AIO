@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.function.BooleanSupplier;
 
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
@@ -79,12 +80,12 @@ public final class VieneuEngine {
     private static final int TEXT_VOCAB = 419, AUDIO_VOCAB = 1024, STYLE_ID = 16;
 
     private final OrtEnvironment env;
-    // Sessions are opened on demand and closed as soon as their stage is done.
-    // vieneu_prefill.onnx and vieneu_decode_step.onnx both reference the same
-    // 99 MB vieneu_backbone_shared.data, so holding them open together costs
-    // ~198 MB of native memory - more than a 32-bit process can map.
+    // Prefill and decode both reference the same 99 MB backbone, so those two
+    // stay serialized. The acoustic graph is self-contained (7 MB) and stays
+    // open across cues: recreating it per line only repeated the session setup.
     private OrtSession sPre, sDec, sAc, sCodec;
     private final OrtSession.SessionOptions opts;
+    private final OrtSession.SessionOptions optsPacked;
     private final File onnxDir, codecDir;
     private final BpeTokenizer tok;
     // The G2P dictionary maps 63 MB. It is only needed while phonemizing, so it
@@ -114,30 +115,9 @@ public final class VieneuEngine {
         env = OrtEnvironment.getEnvironment();
         tr("ctor: env ok " + env);
         tr("ctor: options start");
-        opts = new OrtSession.SessionOptions();
-        opts.setIntraOpNumThreads(Math.max(1, threads));
-        opts.setInterOpNumThreads(1);
-        // Weak TV boxes run out of memory long before the weights fit: keep the
-        // allocator small instead of letting ORT reserve big arenas.
-        opts.setMemoryPatternOptimization(false);
-        // Optimization stays OFF while the release crash is being isolated:
-        // the real cause was R8 renaming ai.onnxruntime classes (see
-        // tts/consumer-rules.pro), not the optimizer. NO_OPT runs the prefill
-        // ~2.5x slower on x86 (221 ms vs 90 ms), so once the 7.5.38 build
-        // confirms the SIGABRT is gone, BASIC_OPT can be measured again.
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
-        // Prepacking repacks every weight into a matmul-friendly layout at load
-        // time, which duplicates the whole 99 MB backbone in memory. On a 32-bit
-        // box that alone is the difference between loading and dying: measured
-        // 123.7 MB resident with prepacking on vs 0.8 MB with it off, for
-        // identical outputs. The graph is int8 and runs unoptimized anyway.
-        opts.addConfigEntry("session.disable_prepacking", "1");
-        // The CPU arena stays enabled. Disabling it frees the initializers
-        // through the default allocator, which crashed while loading the int8
-        // graph on a 32-bit Android box (see dc4e97f), and it only buys ~3 MB
-        // once prepacking is off - not worth the crash.
-        opts.setCPUArenaAllocator(true);
-        tr("ctor: options ok threads=" + Math.max(1, threads));
+        opts = newOptions(threads, false);
+        optsPacked = newOptions(threads, true);
+        tr("ctor: options ok threads=" + Math.max(1, threads) + " prepack=acoustic+decode");
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
         // No ONNX session is opened here: the engine load itself must stay small
@@ -199,14 +179,70 @@ public final class VieneuEngine {
         getRow(table, row, dst, 0);
     }
 
-    private OrtSession openSession(String name) throws Exception {
+    /**
+     * Dot product of one H-long mapped row with vec. Four accumulators break
+     * the dependency chain that made the 16 x 1024-vocab sampling heads the
+     * largest Java-side cost per audio frame (9.7 -> 6.3 ms measured).
+     */
+    private static float dotRow(FloatBuffer table, int off, float[] vec) {
+        float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+        for (int h = 0; h < H; h += 4) {
+            s0 += vec[h] * table.get(off + h);
+            s1 += vec[h + 1] * table.get(off + h + 1);
+            s2 += vec[h + 2] * table.get(off + h + 2);
+            s3 += vec[h + 3] * table.get(off + h + 3);
+        }
+        return (s0 + s1) + (s2 + s3);
+    }
+
+    /**
+     * Prepacking is the big speed lever on the int8 graphs, but it duplicates
+     * the initializers it repacks. The acoustic (~7 MB) and decode graphs gain
+     * 5x and 2.6x from it; the 99 MB prefill backbone would cost another
+     * 99 MB of address space for a one-shot run, and the codec runs once, so
+     * both keep prepacking off.
+     */
+    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack) throws Exception {
+        OrtSession.SessionOptions o = new OrtSession.SessionOptions();
+        o.setIntraOpNumThreads(Math.max(1, threads));
+        o.setInterOpNumThreads(1);
+        // Weak TV boxes run out of memory long before the weights fit: keep the
+        // allocator small instead of letting ORT reserve big arenas.
+        o.setMemoryPatternOptimization(false);
+        // Optimization stays OFF while the release crash is being isolated:
+        // the real cause was R8 renaming ai.onnxruntime classes (see
+        // tts/consumer-rules.pro), not the optimizer.
+        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+        o.addConfigEntry("session.disable_prepacking", prepack ? "0" : "1");
+        // The CPU arena stays enabled. Disabling it frees the initializers
+        // through the default allocator, which crashed while loading the int8
+        // graph on a 32-bit Android box (see dc4e97f).
+        o.setCPUArenaAllocator(true);
+        return o;
+    }
+
+    private OrtSession openSession(String name, OrtSession.SessionOptions options) throws Exception {
         File f = new File(onnxDir, name);
         if (!f.isFile()) f = new File(codecDir, name);
-        return env.createSession(f.getAbsolutePath(), opts);
+        return env.createSession(f.getAbsolutePath(), options);
     }
 
     private static void closeQuietly(OrtSession s) {
         if (s != null) try { s.close(); } catch (Exception ignored) {}
+    }
+
+    /** Aborts a synthesis whose cue was stopped or replaced by a newer one. */
+    public static final class Cancelled extends Exception {
+        Cancelled(String reason) { super(reason, null, false, false); }
+    }
+
+    private static void ensureActive(BooleanSupplier cancelled, BooleanSupplier superseded) throws Cancelled {
+        if (cancelled != null && cancelled.getAsBoolean()) throw new Cancelled("cancelled");
+        if (superseded != null && superseded.getAsBoolean()) throw new Cancelled("superseded");
+    }
+
+    private static void ensureNotCancelled(BooleanSupplier cancelled) throws Cancelled {
+        if (cancelled != null && cancelled.getAsBoolean()) throw new Cancelled("cancelled");
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -301,10 +337,7 @@ public final class VieneuEngine {
     private int sampleChannel(float[] vec, int ch, Params p, Hist hist) {
         int base = ch * AUDIO_VOCAB * H;
         for (int v = 0; v < AUDIO_VOCAB; v++) {
-            int off = base + v * H;
-            float s = 0;
-            for (int h = 0; h < H; h++) s += vec[h] * audioEmb.get(off + h);
-            idxBuf[v] = s;
+            idxBuf[v] = dotRow(audioEmb, base + v * H, vec);
         }
         if (p.repPen != 1f && hist != null && hist.size(ch) > 0) {
             for (int code : hist.codes(ch)) {
@@ -409,9 +442,7 @@ public final class VieneuEngine {
 
         float[] tl = new float[TEXT_VOCAB];
         for (int v = 0; v < TEXT_VOCAB; v++) {
-            int off = v * H; float s = 0;
-            for (int i = 0; i < H; i++) s += slot0[i] * textEmb.get(off + i);
-            tl[v] = s;
+            tl[v] = dotRow(textEmb, v * H, slot0);
         }
         int am = 0; for (int v = 1; v < TEXT_VOCAB; v++) if (tl[v] > tl[am]) am = v;
         lastEos = am == (int) EOS_SPEECH;
@@ -419,7 +450,20 @@ public final class VieneuEngine {
     }
 
     // ── public synthesis ────────────────────────────────────────────────────────
-    public float[] synthesize(String text, float[] speakerEmb, int[][] refCodes, Params p) throws Exception {
+    /**
+     * @param cancelled  set when the user stopped narration or a background
+     *                   prefetch must yield; checked between stages and every
+     *                   8 AR frames
+     * @param superseded set when a newer cue replaced this one; checked before
+     *                   prefill and before AR, so a stale line never pays for
+     *                   the expensive stage. Once AR has started the line is
+     *                   finished and played (a newer cue cuts it), because
+     *                   dropping every late line would turn a synth that is one
+     *                   cue behind into silence.
+     */
+    public float[] synthesize(String text, float[] speakerEmb, int[][] refCodes, Params p,
+                              BooleanSupplier cancelled, BooleanSupplier superseded) throws Exception {
+        ensureActive(cancelled, superseded);
         mem("synth: before-g2p");
         if (g2p == null) g2p = new G2P(g2pPath);
         String phonemes = g2p.phonemize(text);
@@ -428,11 +472,13 @@ public final class VieneuEngine {
         g2p.close();
         g2p = null;
         mem("synth: after-g2p");
-        return synthesizePhonemes(phonemes, speakerEmb, refCodes, p);
+        return synthesizePhonemes(phonemes, speakerEmb, refCodes, p, cancelled, superseded);
     }
 
-    public float[] synthesizePhonemes(String phonemes, float[] speakerEmb, int[][] refCodes, Params p) throws Exception {
+    public float[] synthesizePhonemes(String phonemes, float[] speakerEmb, int[][] refCodes, Params p,
+                                      BooleanSupplier cancelled, BooleanSupplier superseded) throws Exception {
         if (closed) throw new IllegalStateException("engine closed");
+        ensureActive(cancelled, superseded);
         float[] anchor = speakerAnchor(speakerEmb);
         long[][] rows = buildRows(phonemes, refCodes);
         tr("synth: rows=" + rows.length);
@@ -441,10 +487,6 @@ public final class VieneuEngine {
 
         Map<String, OnnxTensor> pin = new HashMap<>();
         pin.put("inputs_embeds", ft(prompt, 1, T, H));
-        // Free the acoustic graph while the 99 MB backbone loads: together they
-        // are more address space than a 32-bit process has.
-        closeQuietly(sAc);
-        sAc = null;
         long synthStart = System.nanoTime();
         tr("synth: prefill session open");
         final long prefillStart = System.nanoTime();
@@ -465,41 +507,52 @@ public final class VieneuEngine {
         }, "vieneu-prefill-hb");
         hb.setDaemon(true);
         hb.start();
-        OrtSession.Result cur;
-        try {
-            sPre = openSession("vieneu_prefill.onnx");
-            tr("synth: prefill loaded in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
-            phase.set(2);
-            cur = sPre.run(pin);
-            tr("synth: prefill done in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
-        } finally {
-            closeAll(pin);
-            hbDone.set(true);
-            hb.interrupt();
-        }
-        float[] hid = readF(T(cur, "hidden"));
-        float[] h = Arrays.copyOfRange(hid, (T - 1) * H, T * H);
+        OrtSession.Result cur = null;
+        float[] h = null;
         // Copy the KV cache out of the prefill session and release it before the
         // decode session opens: both graphs reference the same 99 MB backbone
         // weights, and a 32-bit process cannot hold two copies at once.
         long[][] kvShape = new long[L][];
         float[][] kvData = new float[L * 2][];
-        for (int i = 0; i < L; i++) {
-            OnnxTensor k = T(cur, "present_k_" + i);
-            OnnxTensor v = T(cur, "present_v_" + i);
-            kvShape[i] = k.getInfo().getShape();
-            kvData[i * 2] = readF(k);
-            kvData[i * 2 + 1] = readF(v);
+        try {
+            ensureActive(cancelled, superseded);
+            sPre = openSession("vieneu_prefill.onnx", opts);
+            tr("synth: prefill loaded in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+            phase.set(2);
+            cur = sPre.run(pin);
+            tr("synth: prefill done in " + (System.nanoTime() - prefillStart) / 1000000L + "ms");
+            float[] hid = readF(T(cur, "hidden"));
+            h = Arrays.copyOfRange(hid, (T - 1) * H, T * H);
+            for (int i = 0; i < L; i++) {
+                OnnxTensor k = T(cur, "present_k_" + i);
+                OnnxTensor v = T(cur, "present_v_" + i);
+                kvShape[i] = k.getInfo().getShape();
+                kvData[i * 2] = readF(k);
+                kvData[i * 2 + 1] = readF(v);
+            }
+        } finally {
+            closeAll(pin);
+            hbDone.set(true);
+            hb.interrupt();
+            if (cur != null) try { cur.close(); } catch (Exception ignored) {}
+            closeQuietly(sPre);
+            sPre = null;
         }
-        cur.close();
-        closeQuietly(sPre);
-        sPre = null;
+        if (h == null) throw new IllegalStateException("prefill produced no hidden state");
         tr("synth: prefill released");
         mem("synth: after-prefill");
 
-        sAc = openSession("vieneu_acoustic_cached.onnx");
-        tr("synth: acoustic reopened");
-        sDec = openSession("vieneu_decode_step.onnx");
+        // Do not start the expensive autoregressive loop for a cue that is
+        // already obsolete; the next one is waiting behind the synth lock.
+        ensureActive(cancelled, superseded);
+
+        // The acoustic graph stays open between cues (7 MB, prepacked): its
+        // session setup was paid again on every subtitle line before.
+        if (sAc == null) {
+            sAc = openSession("vieneu_acoustic_cached.onnx", optsPacked);
+            tr("synth: acoustic opened");
+        }
+        sDec = openSession("vieneu_decode_step.onnx", optsPacked);
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
             pk[i] = OnnxTensor.createTensor(env, FloatBuffer.wrap(kvData[i * 2]), kvShape[i]);
@@ -512,39 +565,71 @@ public final class VieneuEngine {
         List<int[]> frames = new ArrayList<>();
         int cap = frameCap(phonemes, p.maxFrames);
         tr("synth: ar start cap=" + cap);
-        for (int t = 0; t < cap; t++) {
-            if (t > 0 && t % 32 == 0) tr("synth: ar t=" + t);
-            int[] codes = acousticFrame(h, p, hist);
-            frames.add(codes);
-            if (lastEos) break;
+        // The first pk/pv are copies of the prefill cache, not owned by a
+        // Result; the ones created by decode runs are owned by cur.
+        boolean ownKv = true;
+        try {
+            for (int t = 0; t < cap; t++) {
+                if (t > 0 && t % 8 == 0) {
+                    if (t % 32 == 0) tr("synth: ar t=" + t);
+                    // A stop must interrupt a long line promptly, and a
+                    // background prefetch must yield to a waiting cue. A newer
+                    // cue does not abort the AR loop itself: restarting every
+                    // line from prefill on each subtitle change would starve
+                    // audio.
+                    ensureNotCancelled(cancelled);
+                }
+                int[] codes = acousticFrame(h, p, hist);
+                frames.add(codes);
+                if (lastEos) break;
 
-            long[] slot = new long[NVQ + 1];
-            Arrays.fill(slot, AUDIO_PAD);
-            slot[0] = SGS;
-            for (int i = 0; i < NVQ; i++) slot[i + 1] = codes[i];
-            float[] se = embedRow(slot, anchor);
-            Map<String, OnnxTensor> din = new HashMap<>();
-            din.put("inputs_embeds", ft(se, 1, 1, H));
-            din.put("position_ids", lt(new long[]{T + t}, 1, 1));
-            for (int i = 0; i < L; i++) { din.put("past_k_" + i, pk[i]); din.put("past_v_" + i, pv[i]); }
-            OrtSession.Result dr = sDec.run(din);
-            // close only inputs we created (inputs_embeds/position_ids); past owned by cur
-            try { din.get("inputs_embeds").close(); } catch (Exception ignored) {}
-            try { din.get("position_ids").close(); } catch (Exception ignored) {}
-            float[] dh = readF(T(dr, "hidden"));
-            h = dh;
-            OnnxTensor[] npk = new OnnxTensor[L], npv = new OnnxTensor[L];
-            for (int i = 0; i < L; i++) {
-                npk[i] = T(dr, "present_k_" + i);
-                npv[i] = T(dr, "present_v_" + i);
+                long[] slot = new long[NVQ + 1];
+                Arrays.fill(slot, AUDIO_PAD);
+                slot[0] = SGS;
+                for (int i = 0; i < NVQ; i++) slot[i + 1] = codes[i];
+                float[] se = embedRow(slot, anchor);
+                Map<String, OnnxTensor> din = new HashMap<>();
+                din.put("inputs_embeds", ft(se, 1, 1, H));
+                din.put("position_ids", lt(new long[]{T + t}, 1, 1));
+                for (int i = 0; i < L; i++) { din.put("past_k_" + i, pk[i]); din.put("past_v_" + i, pv[i]); }
+                OrtSession.Result dr;
+                try {
+                    dr = sDec.run(din);
+                } finally {
+                    // close only inputs we created (inputs_embeds/position_ids); past owned by cur
+                    try { din.get("inputs_embeds").close(); } catch (Exception ignored) {}
+                    try { din.get("position_ids").close(); } catch (Exception ignored) {}
+                }
+                float[] dh = readF(T(dr, "hidden"));
+                h = dh;
+                OnnxTensor[] npk = new OnnxTensor[L], npv = new OnnxTensor[L];
+                for (int i = 0; i < L; i++) {
+                    npk[i] = T(dr, "present_k_" + i);
+                    npv[i] = T(dr, "present_v_" + i);
+                }
+                cur.close();
+                if (ownKv) {
+                    for (int i = 0; i < L; i++) { pk[i].close(); pv[i].close(); }
+                    ownKv = false;
+                }
+                cur = dr; pk = npk; pv = npv;
             }
-            cur.close();
-            cur = dr; pk = npk; pv = npv;
+        } finally {
+            if (ownKv) {
+                for (int i = 0; i < L; i++) {
+                    try { pk[i].close(); } catch (Exception ignored) {}
+                    try { pv[i].close(); } catch (Exception ignored) {}
+                }
+            }
+            if (cur != null) try { cur.close(); } catch (Exception ignored) {}
+            // Release the decode graph before the codec graph loads.
+            closeQuietly(sDec);
+            sDec = null;
         }
-        cur.close();
-        // Release the decode graph before the codec graph loads.
-        closeQuietly(sDec);
-        sDec = null;
+        // Once the AR loop has run, finish the codec so the line is heard: a
+        // newer cue will cut it when its own audio is ready, and dropping it
+        // here would leave silence whenever cues arrive faster than the synth.
+        ensureNotCancelled(cancelled);
         tr("synth: ar done frames=" + frames.size());
         mem("synth: before-codec");
         float[] out = decodeCodes(frames);
@@ -562,6 +647,7 @@ public final class VieneuEngine {
         closeQuietly(sAc); sAc = null;
         closeQuietly(sCodec); sCodec = null;
         try { opts.close(); } catch (Exception ignored) {}
+        try { optsPacked.close(); } catch (Exception ignored) {}
         if (g2p != null) try { g2p.close(); } catch (Exception ignored) {}
     }
 
@@ -581,7 +667,7 @@ public final class VieneuEngine {
         in.put("audio_codes", it(codes, 1, T, NVQ));
         in.put("audio_code_lengths", it(lens, 1));
         long codecStart = System.nanoTime();
-        sCodec = openSession("moss_audio_tokenizer_decode_full.onnx");
+        sCodec = openSession("moss_audio_tokenizer_decode_full.onnx", opts);
         tr("synth: codec loaded in " + (System.nanoTime() - codecStart) / 1000000L + "ms");
         OrtSession.Result r = sCodec.run(in);
         tr("synth: codec done");

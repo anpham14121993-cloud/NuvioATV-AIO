@@ -169,7 +169,20 @@ class NarrationController(
             unduckPlayer()
         } else {
             start()
+            warmUpEngine()
         }
+    }
+
+    /**
+     * Loads the offline engine when narration is switched on, not on the first
+     * subtitle: that first line used to wait for the 63 MB G2P dictionary and
+     * the model copy while the movie was already talking.
+     */
+    private fun warmUpEngine() {
+        if (engineWarmedUp) return
+        val e = engineOrCreate() ?: return
+        runCatching { e.warmUp() }
+        engineWarmedUp = true
     }
 
     fun setVolumePercent(volumePercent: Int) {
@@ -217,11 +230,8 @@ class NarrationController(
     fun prefetch(text: String) {
         if (!enabled || released) return
         val clean = cleanText(text) ?: return
+        warmUpEngine()
         val e = engineOrCreate() ?: return
-        if (!engineWarmedUp) {
-            runCatching { e.warmUp() }
-            engineWarmedUp = true
-        }
         val rate = chooseRatePercent(clean.length, null)
         e.prefetch(clean, narrationVoice, rate)
     }
