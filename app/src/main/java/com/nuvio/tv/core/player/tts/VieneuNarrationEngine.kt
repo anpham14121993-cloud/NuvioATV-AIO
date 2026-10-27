@@ -47,6 +47,7 @@ class VieneuNarrationEngine(
         const val GAIN = 2.2f
         const val MAX_CACHE = 32
         const val PREFETCH_PACE_MS = 300L
+        const val MIN_PLAY_BUDGET_MS = 4000L
         const val MAX_DISK_BYTES = 256L * 1024L * 1024L
         // The engine's measured peak resident footprint is ~170 MB, so that is
         // what the guard has to protect. It used to ask for 300 MB free, which a
@@ -142,7 +143,9 @@ class VieneuNarrationEngine(
 
     override fun warmUp() {
         if (released) return
-        runCatching { worker.execute { ensureEngine() } }
+        // Opens the four graphs once on the worker, so the first subtitle does
+        // not pay their session setup while the viewer waits for narration.
+        runCatching { worker.execute { ensureEngine()?.warmUp() } }
     }
 
     override fun setNarrationVolume(volume01: Float) {
@@ -233,7 +236,18 @@ class VieneuNarrationEngine(
     // ── worker ─────────────────────────────────────────────────────────────────
 
     private fun runSpeak(seq: Int) {
-        speakWaiting.decrementAndGet()
+        // Keep the request counted until it is fully handled. It used to be
+        // decremented on entry, before the worker blocked on synthLock, so a
+        // running prefetch saw "nobody waiting" and kept the engine for a whole
+        // line while the on-screen subtitle waited behind it.
+        try {
+            runSpeakInner(seq)
+        } finally {
+            speakWaiting.decrementAndGet()
+        }
+    }
+
+    private fun runSpeakInner(seq: Int) {
         val r = req ?: return
         if (r.seq != seq || released) {
             staleDrop.incrementAndGet()
@@ -526,7 +540,13 @@ class VieneuNarrationEngine(
             superseded = null
         } else {
             cancelled = BooleanSupplier { released || stopToken.get() != myStop }
-            superseded = BooleanSupplier { req?.seq != seq }
+            // A newer cue must not abort a line that has already started: one
+            // line takes longer than several subtitle cues on this box, so
+            // aborting on "superseded" dropped every line during a dialogue
+            // and left the narration silent. The pre-lock check above still
+            // skips a cue that never started; a finished line plays and is cut
+            // by the next one's audio.
+            superseded = null
         }
         return try {
             val p = VieneuEngine.Params()
@@ -644,7 +664,12 @@ class VieneuNarrationEngine(
             val frames = boosted.size.coerceAtLeast(written)
             var durationMs = frames.toLong() * 1000L / sr
             if (speed > 1.001f) durationMs = (durationMs / speed).toLong()
-            if (r.budgetMs != null && r.budgetMs in 1 until durationMs) durationMs = r.budgetMs
+            // The subtitle-window budget exists to avoid overlap when the next
+            // line is ready quickly; the next play() cuts this track anyway.
+            // Cutting to a ~2 s window truncated every sentence's tail on this
+            // box, which sounded like "reads half a sentence, then goes quiet".
+            val budget = r.budgetMs?.coerceAtLeast(MIN_PLAY_BUDGET_MS)
+            if (budget != null && budget in 1 until durationMs) durationMs = budget
             // Do NOT block the worker here: return immediately so the next cue can be
             // synthesized/played on time. The track is stopped by a scheduled callback.
             val finish = Runnable {
