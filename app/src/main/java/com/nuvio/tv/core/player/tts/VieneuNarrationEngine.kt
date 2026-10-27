@@ -145,7 +145,17 @@ class VieneuNarrationEngine(
         if (released) return
         // Opens the four graphs once on the worker, so the first subtitle does
         // not pay their session setup while the viewer waits for narration.
-        runCatching { worker.execute { ensureEngine()?.warmUp() } }
+        runCatching {
+            worker.execute {
+                val e = ensureEngine() ?: return@execute
+                // release() closes the sessions under synthLock; opening them
+                // outside it could close one mid-creation and crash in native
+                // code when the player is exited during warm-up.
+                synchronized(synthLock) {
+                    if (!released) e.warmUp()
+                }
+            }
+        }
     }
 
     override fun setNarrationVolume(volume01: Float) {
