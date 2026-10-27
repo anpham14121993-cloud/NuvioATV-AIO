@@ -79,6 +79,25 @@ public final class VieneuEngine {
     private static final long AUDIO_PAD = 1024, TPS = 3, TPE = 4, SGS = 5, EOS_SPEECH = 6, REF_SLOT = 7;
     private static final int TEXT_VOCAB = 419, AUDIO_VOCAB = 1024, STYLE_ID = 16;
 
+    // Only ask ORT for the outputs a step actually reads. On the acoustic graph
+    // this is every run of every frame, so dropping anything unused (if the
+    // export carries extras) saves a copy per run.
+    private static final java.util.Set<String> OUT_AC = new java.util.HashSet<>(
+            Arrays.asList("hidden", "present_k_0", "present_v_0"));
+    private static final java.util.Set<String> OUT_DEC = decOutputs();
+    private static final java.util.Set<String> OUT_CODEC = new java.util.HashSet<>(
+            Arrays.asList("audio", "audio_lengths"));
+
+    private static java.util.Set<String> decOutputs() {
+        java.util.Set<String> s = new java.util.HashSet<>();
+        s.add("hidden");
+        for (int i = 0; i < L; i++) {
+            s.add("present_k_" + i);
+            s.add("present_v_" + i);
+        }
+        return s;
+    }
+
     private final OrtEnvironment env;
     // Every graph is opened once and kept for the engine's lifetime. Session
     // setup is 5 s for the 99 MB prefill backbone on this box, so paying it per
@@ -98,11 +117,19 @@ public final class VieneuEngine {
     private boolean lastEos;
     private volatile boolean closed;
 
-    // heads.bin is mapped, never copied into the Java heap: audio_emb alone is
-    // 16*1024*768 floats (48 MB), which a 32-bit box cannot afford on top of the
-    // ONNX weights. The kernel pages in only what a synthesis actually touches.
+    // heads.bin is mapped, never copied wholesale into the Java heap: audio_emb
+    // alone is 16*1024*768 floats (48 MB), which a 32-bit box cannot afford on
+    // top of the ONNX weights. The kernel pages in only what a synthesis
+    // actually touches.
     private MappedByteBuffer headsMap;
     private FloatBuffer textEmb, audioEmb, xvecW, xvecB, lnW, lnB;
+    // Heap mirrors of the two embedding tables. Reading the mapped table costs
+    // one bounds-checked direct-buffer read per float, and every AR frame scans
+    // all 16 * 1024 rows of audio_emb: ~756 M such reads for a 60-frame line,
+    // which is most of the sampling stage on this ARMv7 core. The mirror is
+    // only taken when the heap has room (a 32-bit box may cap it at 128 MB);
+    // otherwise the mapped table stays in use and nothing changes.
+    private float[] textEmbHeap, audioEmbHeap;
     // Sequential row views reused by the sampling loops; every synthesis is
     // serialized on the caller's lock, so one mutable position is safe.
     private FloatBuffer textEmbView, audioEmbView;
@@ -168,7 +195,53 @@ public final class VieneuEngine {
         lnW = slice(fb, p, H); p += H;
         lnB = slice(fb, p, H); p += H;
         lnEps = fb.get(p);
-        tr("heads: mapped " + (len / 1048576L) + "MB");
+        // text_emb is 1.3 MB, always worth mirroring: the per-frame EOS check
+        // scans all 419 rows of it. audio_emb is only mirrored when the heap
+        // can take 48 MB with 64 MB still spare for the ONNX/KV work.
+        textEmbHeap = toHeap(textEmb, TEXT_VOCAB * H, false);
+        audioEmbHeap = toHeap(audioEmb, NVQ * AUDIO_VOCAB * H, true);
+        tr("heads: mapped " + (len / 1048576L) + "MB heap text="
+                + (textEmbHeap != null) + " audio=" + (audioEmbHeap != null));
+    }
+
+    /**
+     * Copies a mapped table into a float[] when there is comfortable heap room.
+     * Returns null (keeping the mapped path) on boxes whose heap cap is too
+     * small - the caller must then use the FloatBuffer accessors. The 48 MB
+     * audio mirror is also refused on boxes with less than 1.8 GB of RAM: the
+     * Java heap limit can look generous there while the physical RAM cannot
+     * back it, and narration must never push the app over.
+     */
+    private static float[] toHeap(FloatBuffer src, int length, boolean requireHeadroom) {
+        try {
+            Runtime rt = Runtime.getRuntime();
+            long used = rt.totalMemory() - rt.freeMemory();
+            long need = (long) length * 4L;
+            if (requireHeadroom) {
+                if (rt.maxMemory() - used < need + (64L << 20)) return null;
+                long totalMb = totalRamMb();
+                if (totalMb > 0 && totalMb < 1800L) return null;
+            }
+            float[] dst = new float[length];
+            src.duplicate().get(dst);
+            return dst;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static long totalRamMb() {
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/meminfo"))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.startsWith("MemTotal:")) {
+                    return Long.parseLong(line.replaceAll("[^0-9]", "")) / 1024L;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
     }
 
     /** A read-only view over a region of the mapped file; no heap copy. */
@@ -195,18 +268,35 @@ public final class VieneuEngine {
         getRow(table, row, dst, 0);
     }
 
+    /** One H-long text_emb row, from the heap mirror when there is one. */
+    private void textRow(int row, float[] dst, int dstOff) {
+        if (textEmbHeap != null) System.arraycopy(textEmbHeap, row * H, dst, dstOff, H);
+        else getRow(textEmb, row, dst, dstOff);
+    }
+
+    /** One H-long audio_emb row, from the heap mirror when there is one. */
+    private void audioRow(int row, float[] dst) {
+        if (audioEmbHeap != null) System.arraycopy(audioEmbHeap, row * H, dst, 0, H);
+        else getRow(audioEmb, row, dst, 0);
+    }
+
     /**
      * Same dot over a heap row. The 16 sampling heads read the whole 48 MB
      * audio_emb table every frame; copying each row once and running a plain
      * array loop is measurably faster than 12.6 M direct-buffer get() calls.
      */
     private static float dotArr(float[] a, float[] b) {
+        return dotArr(a, 0, b);
+    }
+
+    /** Dot of a[off..off+H) with b, 4-way unrolled so the JIT keeps it tight. */
+    private static float dotArr(float[] a, int off, float[] b) {
         float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
         for (int h = 0; h < H; h += 4) {
-            s0 += a[h] * b[h];
-            s1 += a[h + 1] * b[h + 1];
-            s2 += a[h + 2] * b[h + 2];
-            s3 += a[h + 3] * b[h + 3];
+            s0 += a[off + h] * b[h];
+            s1 += a[off + h + 1] * b[h + 1];
+            s2 += a[off + h + 2] * b[h + 2];
+            s3 += a[off + h + 3] * b[h + 3];
         }
         return (s0 + s1) + (s2 + s3);
     }
@@ -340,12 +430,23 @@ public final class VieneuEngine {
 
     private float[] embedRow(long[] row, float[] anchor) {
         float[] e = new float[H];
-        getRow(textEmb, (int) row[0], e);
-        for (int ch = 0; ch < NVQ; ch++) {
-            long id = row[ch + 1];
-            if (id != AUDIO_PAD) {
-                int base = (ch * AUDIO_VOCAB + (int) id) * H;
-                for (int h = 0; h < H; h++) e[h] += audioEmb.get(base + h);
+        textRow((int) row[0], e, 0);
+        float[] heap = audioEmbHeap;
+        if (heap != null) {
+            for (int ch = 0; ch < NVQ; ch++) {
+                long id = row[ch + 1];
+                if (id != AUDIO_PAD) {
+                    int base = (ch * AUDIO_VOCAB + (int) id) * H;
+                    for (int h = 0; h < H; h++) e[h] += heap[base + h];
+                }
+            }
+        } else {
+            for (int ch = 0; ch < NVQ; ch++) {
+                long id = row[ch + 1];
+                if (id != AUDIO_PAD) {
+                    int base = (ch * AUDIO_VOCAB + (int) id) * H;
+                    for (int h = 0; h < H; h++) e[h] += audioEmb.get(base + h);
+                }
             }
         }
         if (anchor != null) for (int h = 0; h < H; h++) e[h] += anchor[h];
@@ -361,10 +462,18 @@ public final class VieneuEngine {
     // ── sampling heads over audio_emb[ch] ───────────────────────────────────────
     private int sampleChannel(float[] vec, int ch, Params p, Hist hist) {
         int rowBase = ch * AUDIO_VOCAB;
-        float[] row = rowBuf;
-        for (int v = 0; v < AUDIO_VOCAB; v++) {
-            row(audioEmbView, rowBase + v, row);
-            idxBuf[v] = dotArr(row, vec);
+        float[] heap = audioEmbHeap;
+        if (heap != null) {
+            int off = rowBase * H;
+            for (int v = 0; v < AUDIO_VOCAB; v++) {
+                idxBuf[v] = dotArr(heap, off + v * H, vec);
+            }
+        } else {
+            float[] row = rowBuf;
+            for (int v = 0; v < AUDIO_VOCAB; v++) {
+                row(audioEmbView, rowBase + v, row);
+                idxBuf[v] = dotArr(row, vec);
+            }
         }
         if (p.repPen != 1f && hist != null && hist.size(ch) > 0) {
             for (int code : hist.codes(ch)) {
@@ -443,14 +552,14 @@ public final class VieneuEngine {
         int[] codes = new int[NVQ];
         float[] tok2 = new float[2 * H];
         System.arraycopy(h, 0, tok2, 0, H);
-        getRow(textEmb, (int) SGS, tok2, H);
+        textRow((int) SGS, tok2, H);
         Map<String, OnnxTensor> in = new HashMap<>();
         OnnxTensor epk = emptyPast(), epv = emptyPast();
         in.put("token_emb", ft(tok2, 1, 2, H));
         in.put("position_ids", lt(new long[]{0, 1}, 1, 2));
         in.put("past_k_0", epk); in.put("past_v_0", epv);
         long t0 = System.nanoTime();
-        OrtSession.Result ar = sAc.run(in);
+        OrtSession.Result ar = sAc.run(in, OUT_AC);
         tAcNs += System.nanoTime() - t0; acRuns++;
         closeAll(in);
         float[] ah = readF(T(ar, "hidden"));
@@ -464,13 +573,13 @@ public final class VieneuEngine {
 
         for (int ch = 1; ch < NVQ; ch++) {
             float[] emb = new float[H];
-            getRow(audioEmb, (ch - 1) * AUDIO_VOCAB + codes[ch - 1], emb);
+            audioRow((ch - 1) * AUDIO_VOCAB + codes[ch - 1], emb);
             Map<String, OnnxTensor> in2 = new HashMap<>();
             in2.put("token_emb", ft(emb, 1, 1, H));
             in2.put("position_ids", lt(new long[]{ch + 1}, 1, 1));
             in2.put("past_k_0", npk); in2.put("past_v_0", npv);
             long t2 = System.nanoTime();
-            OrtSession.Result ar2 = sAc.run(in2);
+            OrtSession.Result ar2 = sAc.run(in2, OUT_AC);
             tAcNs += System.nanoTime() - t2; acRuns++;
             closeAll(in2);
             float[] ah2 = readF(T(ar2, "hidden"));
@@ -486,7 +595,7 @@ public final class VieneuEngine {
 
         float[] tl = new float[TEXT_VOCAB];
         for (int v = 0; v < TEXT_VOCAB; v++) {
-            row(textEmbView, v, rowBuf);
+            textRow(v, rowBuf, 0);
             tl[v] = dotArr(rowBuf, slot0);
         }
         int am = 0; for (int v = 1; v < TEXT_VOCAB; v++) if (tl[v] > tl[am]) am = v;
@@ -633,7 +742,7 @@ public final class VieneuEngine {
                 OrtSession.Result dr;
                 long td = System.nanoTime();
                 try {
-                    dr = sDec.run(din);
+                    dr = sDec.run(din, OUT_DEC);
                 } finally {
                     tDecNs += System.nanoTime() - td;
                     decRuns++;
@@ -714,7 +823,7 @@ public final class VieneuEngine {
             in.put("audio_code_lengths", it(lens, 1));
             if (sCodec == null) sCodec = openSession("moss_audio_tokenizer_decode_full.onnx", opts);
             long codecStart = System.nanoTime();
-            OrtSession.Result r = sCodec.run(in);
+            OrtSession.Result r = sCodec.run(in, OUT_CODEC);
             try {
                 tr("synth: codec run " + (System.nanoTime() - codecStart) / 1000000L + "ms");
                 float[] audio = readF(T(r, "audio"));

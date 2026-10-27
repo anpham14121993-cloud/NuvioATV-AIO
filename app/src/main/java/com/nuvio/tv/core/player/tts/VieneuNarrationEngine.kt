@@ -391,8 +391,17 @@ class VieneuNarrationEngine(
                         stage("hb${beats} ${loader.state} $frames")
                     }
                 }.apply { isDaemon = true; name = "nuvio-vieneu-hb"; start() }
+                // The prefill and decode graphs multiply the 99 MB backbone, so
+                // on a 4-core box ORT can use every core. 32-bit builds were
+                // pinned to 2 threads, which left half the CPU idle while a
+                // line was synthesizing. The acoustic graph is serialized per
+                // frame, so extra threads cannot help it, but they cannot hurt
+                // it either: it simply owns its own share of the pool.
+                val cores = Runtime.getRuntime().availableProcessors()
+                val threads = if (Process.is64Bit()) THREADS else cores.coerceIn(2, 4)
+                stage("load: threads=$threads cores=$cores")
                 try {
-                    engine = VieneuEngine(base, heads, tokJson, g2p, if (Process.is64Bit()) THREADS else 2)
+                    engine = VieneuEngine(base, heads, tokJson, g2p, threads)
                 } finally {
                     hbDone.set(true)
                     hb.interrupt()
