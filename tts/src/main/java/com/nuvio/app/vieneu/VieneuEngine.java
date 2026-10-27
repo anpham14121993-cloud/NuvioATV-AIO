@@ -121,14 +121,14 @@ public final class VieneuEngine {
         env = OrtEnvironment.getEnvironment();
         tr("ctor: env ok " + env);
         tr("ctor: options start");
-        opts = newOptions(threads, false, OrtSession.SessionOptions.OptLevel.BASIC_OPT);
-        optsPacked = newOptions(threads, true, OrtSession.SessionOptions.OptLevel.EXTENDED_OPT);
-        tr("ctor: options ok threads=" + Math.max(1, threads) + " opt=basic/prepack=off opt=extended/prepack=on");
+        opts = newOptions(threads, false);
+        optsPacked = newOptions(threads, true);
+        tr("ctor: options ok threads=" + Math.max(1, threads) + " opt=no_opt");
         onnxDir = new File(modelDir, "onnx_int8");
         codecDir = new File(modelDir, "codec");
         // No ONNX session is opened here: the engine load itself must stay small
-        // on a 32-bit box. warmUp() opens them once narration is enabled, and a
-        // session opened there survives every later cue.
+        // on a 32-bit box. Each graph is opened on its first real use and then
+        // kept for every later cue.
         mem("ctor: sessions");
 
         tr("ctor: heads start");
@@ -210,23 +210,22 @@ public final class VieneuEngine {
     }
 
     /**
-     * Prepacking is the big speed lever on the int8 graphs, but it is only run
-     * by ORT's graph optimizer: with NO_OPT the whole pass is skipped and the
-     * kernels repack the weights on every MatMul instead. That made 7.5.39's
-     * prepack setting a no-op and the autoregressive loop take minutes per
-     * line. BASIC already includes packing (prefill/codec, which are opened
-     * once and must not duplicate their 99 MB backbone); the two hot graphs use
-     * EXTENDED for the extra fusions.
+     * Graph optimization stays at NO_OPT, as in the last build that did not
+     * crash. 7.5.41 opened all four graphs at movie start with BASIC/EXTENDED
+     * plus prepacking, which killed the app on this 32-bit box before the
+     * first subtitle: each optimized session keeps its own packed copy of the
+     * 99 MB backbone and the new kernels run for the first time there. The
+     * speed fix that remains is session reuse - each graph is still opened
+     * once and kept - without the extra native memory and new kernel paths.
      */
-    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack,
-                                                        OrtSession.SessionOptions.OptLevel level) throws Exception {
+    private static OrtSession.SessionOptions newOptions(int threads, boolean prepack) throws Exception {
         OrtSession.SessionOptions o = new OrtSession.SessionOptions();
         o.setIntraOpNumThreads(Math.max(1, threads));
         o.setInterOpNumThreads(1);
         // Weak TV boxes run out of memory long before the weights fit: keep the
         // allocator small instead of letting ORT reserve big arenas.
         o.setMemoryPatternOptimization(false);
-        o.setOptimizationLevel(level);
+        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
         o.addConfigEntry("session.disable_prepacking", prepack ? "0" : "1");
         // The CPU arena stays enabled. Disabling it frees the initializers
         // through the default allocator, which crashed while loading the int8
@@ -235,52 +234,24 @@ public final class VieneuEngine {
         return o;
     }
 
+    /**
+     * Breadcrumbs on both sides of the native session creation: if a graph
+     * still kills the process, narration_prev.log names the one that did and
+     * the last line shows whether the death happened during load.
+     */
     private OrtSession openSession(String name, OrtSession.SessionOptions options) throws Exception {
         File f = new File(onnxDir, name);
         if (!f.isFile()) f = new File(codecDir, name);
-        return env.createSession(f.getAbsolutePath(), options);
+        tr("open: " + name + " start");
+        long t = System.nanoTime();
+        OrtSession s = env.createSession(f.getAbsolutePath(), options);
+        tr("open: " + name + " done " + (System.nanoTime() - t) / 1000000L + "ms");
+        mem("open: " + name);
+        return s;
     }
 
     private static void closeQuietly(OrtSession s) {
         if (s != null) try { s.close(); } catch (Exception ignored) {}
-    }
-
-    /**
-     * Opens every graph once, on the narration worker, while the viewer is
-     * still reading the first subtitle. Without this the first cue paid the
-     * four session-creation costs itself; with it every cue shares them.
-     */
-    public void warmUp() {
-        if (closed) return;
-        long t0 = System.nanoTime();
-        try {
-            if (sPre == null) {
-                long t = System.nanoTime();
-                sPre = openSession("vieneu_prefill.onnx", opts);
-                tr("warm: prefill " + (System.nanoTime() - t) / 1000000L + "ms");
-            }
-            if (sAc == null) {
-                long t = System.nanoTime();
-                sAc = openSession("vieneu_acoustic_cached.onnx", optsPacked);
-                tr("warm: acoustic " + (System.nanoTime() - t) / 1000000L + "ms");
-            }
-            if (sDec == null) {
-                long t = System.nanoTime();
-                sDec = openSession("vieneu_decode_step.onnx", optsPacked);
-                tr("warm: decode " + (System.nanoTime() - t) / 1000000L + "ms");
-            }
-            if (sCodec == null) {
-                long t = System.nanoTime();
-                sCodec = openSession("moss_audio_tokenizer_decode_full.onnx", opts);
-                tr("warm: codec " + (System.nanoTime() - t) / 1000000L + "ms");
-            }
-            tr("warm: ready " + (System.nanoTime() - t0) / 1000000L + "ms");
-        } catch (Throwable t) {
-            // A failed warm-up must not disable narration: each stage retries
-            // its own session on first use, so a transient OOM can still pass.
-            tr("warm: FAIL " + t.getClass().getSimpleName() + " " + (t.getMessage() == null ? "" : t.getMessage()));
-        }
-        mem("warm: done");
     }
 
     /** Aborts a synthesis whose cue was stopped or replaced by a newer one. */
@@ -577,11 +548,7 @@ public final class VieneuEngine {
         float[][] kvData = new float[L * 2][];
         try {
             ensureActive(cancelled, superseded);
-            if (sPre == null) {
-                long loadStart = System.nanoTime();
-                sPre = openSession("vieneu_prefill.onnx", opts);
-                tr("synth: prefill loaded in " + (System.nanoTime() - loadStart) / 1000000L + "ms");
-            }
+            if (sPre == null) sPre = openSession("vieneu_prefill.onnx", opts);
             phase.set(2);
             long runStart = System.nanoTime();
             cur = sPre.run(pin);
@@ -611,16 +578,8 @@ public final class VieneuEngine {
 
         // Both hot graphs opened on the first cue survive later cues: their
         // session setup was paid again on every subtitle line before.
-        if (sAc == null) {
-            long t = System.nanoTime();
-            sAc = openSession("vieneu_acoustic_cached.onnx", optsPacked);
-            tr("synth: acoustic opened in " + (System.nanoTime() - t) / 1000000L + "ms");
-        }
-        if (sDec == null) {
-            long t = System.nanoTime();
-            sDec = openSession("vieneu_decode_step.onnx", optsPacked);
-            tr("synth: decode opened in " + (System.nanoTime() - t) / 1000000L + "ms");
-        }
+        if (sAc == null) sAc = openSession("vieneu_acoustic_cached.onnx", optsPacked);
+        if (sDec == null) sDec = openSession("vieneu_decode_step.onnx", optsPacked);
         OnnxTensor[] pk = new OnnxTensor[L], pv = new OnnxTensor[L];
         for (int i = 0; i < L; i++) {
             pk[i] = OnnxTensor.createTensor(env, FloatBuffer.wrap(kvData[i * 2]), kvShape[i]);
@@ -732,11 +691,7 @@ public final class VieneuEngine {
         try {
             in.put("audio_codes", it(codes, 1, T, NVQ));
             in.put("audio_code_lengths", it(lens, 1));
-            if (sCodec == null) {
-                long t = System.nanoTime();
-                sCodec = openSession("moss_audio_tokenizer_decode_full.onnx", opts);
-                tr("synth: codec loaded in " + (System.nanoTime() - t) / 1000000L + "ms");
-            }
+            if (sCodec == null) sCodec = openSession("moss_audio_tokenizer_decode_full.onnx", opts);
             long codecStart = System.nanoTime();
             OrtSession.Result r = sCodec.run(in);
             try {

@@ -143,19 +143,11 @@ class VieneuNarrationEngine(
 
     override fun warmUp() {
         if (released) return
-        // Opens the four graphs once on the worker, so the first subtitle does
-        // not pay their session setup while the viewer waits for narration.
-        runCatching {
-            worker.execute {
-                val e = ensureEngine() ?: return@execute
-                // release() closes the sessions under synthLock; opening them
-                // outside it could close one mid-creation and crash in native
-                // code when the player is exited during warm-up.
-                synchronized(synthLock) {
-                    if (!released) e.warmUp()
-                }
-            }
-        }
+        // Loads the engine (heads + G2P) on the worker while the player opens.
+        // It must not open any ONNX graph here: 7.5.41 opened all four and the
+        // app died on the 32-bit box before the first subtitle. Each graph is
+        // opened on its first real use and then kept for the session.
+        runCatching { worker.execute { ensureEngine() } }
     }
 
     override fun setNarrationVolume(volume01: Float) {
