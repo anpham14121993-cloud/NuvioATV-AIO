@@ -273,6 +273,21 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
         val text = merged.joinToString(" ") { it.text.toString() }.trim()
         if (text.isNotEmpty()) narration()?.onCueText(text)
     }
+    val nController = narration()
+    if (nController != null) {
+        val prefetchHorizonUs = positionUs + 25_000_000L
+        var prefetched = 0
+        for (entry in cues) {
+            if (entry.startTimeUs in (positionUs + 1_000_000L)..prefetchHorizonUs) {
+                val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+                if (upcomingText.isNotEmpty()) {
+                    nController.prefetch(upcomingText)
+                    prefetched++
+                    if (prefetched >= 4) break
+                }
+            }
+        }
+    }
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return
     postToSubtitleView { view ->

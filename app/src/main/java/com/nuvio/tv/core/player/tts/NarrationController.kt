@@ -429,10 +429,15 @@ class NarrationController(
     }
 
     private fun shouldNarrateText(text: String): Boolean {
-        if (looksVietnamese(text)) return true
-        if (hasNonLatinScript(text)) return true
-        val letters = text.count { it.isLetter() }
-        return letters in 1..39 && text.all { !it.isLetter() || it in 'A'..'Z' || it in 'a'..'z' }
+        if (text.isBlank()) return false
+        val trimmed = text.trim()
+        if (trimmed.startsWith("♪") ||
+            (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+            (trimmed.startsWith("(") && trimmed.endsWith(")"))
+        ) {
+            return false
+        }
+        return true
     }
 
     private fun looksVietnamese(text: String): Boolean {

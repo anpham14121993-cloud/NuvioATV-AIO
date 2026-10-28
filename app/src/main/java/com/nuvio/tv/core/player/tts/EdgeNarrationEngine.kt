@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -54,10 +55,10 @@ class EdgeNarrationEngine(
         private const val SYNTH_TIMEOUT_SEC = 8L
     }
 
-    private val worker = Executors.newSingleThreadExecutor { runnable ->
+    private val worker = Executors.newFixedThreadPool(3) { runnable ->
         Thread(runnable, "nuvio-edge-tts").apply { isDaemon = true }
     }
-    private val prefetchPool = Executors.newSingleThreadExecutor { runnable ->
+    private val prefetchPool = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "nuvio-edge-prefetch").apply { isDaemon = true }
     }
     private val prefetchInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -76,8 +77,18 @@ class EdgeNarrationEngine(
     @Volatile
     private var narrationVolume = 1f
 
+    private data class PendingAudio(
+        val file: File,
+        val seq: Int,
+        val onResult: ((Boolean, String) -> Unit)?,
+    )
+
     @Volatile
     private var activePlayer: MediaPlayer? = null
+    @Volatile
+    private var pendingAudio: PendingAudio? = null
+    @Volatile
+    private var activePlayStartMs = 0L
     private val playerLock = Any()
 
     private val reqSeq = AtomicInteger(0)
@@ -112,19 +123,19 @@ class EdgeNarrationEngine(
         }
         val seq = reqSeq.incrementAndGet()
         worker.execute {
-            if (released || seq != reqSeq.get()) return@execute
+            if (released) return@execute
             val voice = resolveVoice(voiceApiName)
             val cacheFile = getCacheFile(text, voice, ratePercent)
 
             if (cacheFile.exists() && cacheFile.length() > 0) {
                 NarrationDiag.log(appContext, "edge: cache hit len=${text.length} v=$voice")
-                playAudioFile(cacheFile, seq, onResult)
+                enqueueAudioFile(cacheFile, seq, onResult)
                 return@execute
             }
 
             NarrationDiag.log(appContext, "edge: fetch live len=${text.length} v=$voice")
             val audioBytes = fetchAudio(text, voice, ratePercent)
-            if (released || seq != reqSeq.get()) return@execute
+            if (released) return@execute
 
             if (audioBytes != null && audioBytes.isNotEmpty()) {
                 runCatching {
@@ -132,7 +143,7 @@ class EdgeNarrationEngine(
                     FileOutputStream(cacheFile).use { it.write(audioBytes) }
                     trimCacheIfNeeded()
                 }
-                playAudioFile(cacheFile, seq, onResult)
+                enqueueAudioFile(cacheFile, seq, onResult)
             } else {
                 NarrationDiag.log(appContext, "edge: fetch failed -> fallback")
                 mainHandler.post { onError(text, ratePercent) }
@@ -337,11 +348,34 @@ class EdgeNarrationEngine(
         return if (result.isNotEmpty()) result else null
     }
 
-    private fun playAudioFile(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
-        stopPlayback()
-        if (released || seq != reqSeq.get()) {
-            onResult?.invoke(false, "superseded")
+    private fun enqueueAudioFile(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+        if (released) {
+            onResult?.invoke(false, "released")
             return
+        }
+        val now = SystemClock.uptimeMillis()
+        synchronized(playerLock) {
+            val mp = activePlayer
+            val speakingNow = isSpeaking.get() && mp != null
+            val playDurationMs = now - activePlayStartMs
+
+            if (!speakingNow || playDurationMs > 4500L) {
+                pendingAudio = null
+                startPlaybackLocked(file, seq, onResult)
+            } else {
+                pendingAudio = PendingAudio(file, seq, onResult)
+            }
+        }
+    }
+
+    private fun startPlaybackLocked(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+        val oldPlayer = activePlayer
+        activePlayer = null
+        if (oldPlayer != null) {
+            runCatching {
+                if (oldPlayer.isPlaying) oldPlayer.stop()
+                oldPlayer.release()
+            }
         }
 
         try {
@@ -355,38 +389,61 @@ class EdgeNarrationEngine(
                 setVolume(narrationVolume, narrationVolume)
                 setDataSource(file.absolutePath)
                 setOnPreparedListener { mp ->
-                    if (released || seq != reqSeq.get()) {
+                    if (released) {
                         runCatching { mp.release() }
                         return@setOnPreparedListener
                     }
-                    isSpeaking.set(true)
-                    mainHandler.post { onSpeechStart() }
-                    mp.start()
-                    onResult?.invoke(true, "playing")
+                    synchronized(playerLock) {
+                        if (activePlayer === mp) {
+                            activePlayStartMs = SystemClock.uptimeMillis()
+                            isSpeaking.set(true)
+                            mainHandler.post { onSpeechStart() }
+                            mp.start()
+                            onResult?.invoke(true, "playing")
+                        } else {
+                            runCatching { mp.release() }
+                        }
+                    }
                 }
                 setOnCompletionListener { mp ->
-                    isSpeaking.set(false)
-                    mainHandler.post { onSpeechEnd() }
-                    runCatching { mp.release() }
+                    var next: PendingAudio? = null
                     synchronized(playerLock) {
+                        runCatching { mp.release() }
                         if (activePlayer === mp) activePlayer = null
+                        next = pendingAudio
+                        pendingAudio = null
+                    }
+                    if (next != null && !released) {
+                        synchronized(playerLock) {
+                            startPlaybackLocked(next!!.file, next!!.seq, next!!.onResult)
+                        }
+                    } else {
+                        isSpeaking.set(false)
+                        mainHandler.post { onSpeechEnd() }
                     }
                 }
                 setOnErrorListener { mp, what, extra ->
                     Log.w(TAG, "MediaPlayer error what=$what extra=$extra")
-                    isSpeaking.set(false)
-                    mainHandler.post { onSpeechEnd() }
-                    runCatching { mp.release() }
+                    var next: PendingAudio? = null
                     synchronized(playerLock) {
+                        runCatching { mp.release() }
                         if (activePlayer === mp) activePlayer = null
+                        next = pendingAudio
+                        pendingAudio = null
+                    }
+                    if (next != null && !released) {
+                        synchronized(playerLock) {
+                            startPlaybackLocked(next!!.file, next!!.seq, next!!.onResult)
+                        }
+                    } else {
+                        isSpeaking.set(false)
+                        mainHandler.post { onSpeechEnd() }
                     }
                     true
                 }
                 prepareAsync()
             }
-            synchronized(playerLock) {
-                activePlayer = player
-            }
+            activePlayer = player
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to start MediaPlayer", t)
             onResult?.invoke(false, "player_failed: ${t.message}")
@@ -395,6 +452,7 @@ class EdgeNarrationEngine(
 
     private fun stopPlayback() {
         synchronized(playerLock) {
+            pendingAudio = null
             val mp = activePlayer
             activePlayer = null
             if (mp != null) {
