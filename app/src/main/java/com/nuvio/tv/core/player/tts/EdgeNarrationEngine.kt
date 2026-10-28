@@ -5,7 +5,6 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -34,7 +33,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Streams high quality Vietnamese neural voices (Hoài My, Nam Minh) via Microsoft Edge
  * Read Aloud WebSocket API with prefetching and disk caching.
- * Falls back to System TTS / Piper TTS on network or synthesis errors.
+ * Serializes WebSocket requests to prevent Bing rate limiting/resets, prioritizes live speech,
+ * and maintains exact subtitle synchronization.
  */
 class EdgeNarrationEngine(
     private val appContext: Context,
@@ -55,10 +55,13 @@ class EdgeNarrationEngine(
         private const val SYNTH_TIMEOUT_SEC = 8L
     }
 
-    private val worker = Executors.newFixedThreadPool(3) { runnable ->
+    private val netLock = Any()
+    private val speakWaiting = AtomicInteger(0)
+
+    private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "nuvio-edge-tts").apply { isDaemon = true }
     }
-    private val prefetchPool = Executors.newFixedThreadPool(2) { runnable ->
+    private val prefetchWorker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "nuvio-edge-prefetch").apply { isDaemon = true }
     }
     private val prefetchInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -77,18 +80,8 @@ class EdgeNarrationEngine(
     @Volatile
     private var narrationVolume = 1f
 
-    private data class PendingAudio(
-        val file: File,
-        val seq: Int,
-        val onResult: ((Boolean, String) -> Unit)?,
-    )
-
     @Volatile
     private var activePlayer: MediaPlayer? = null
-    @Volatile
-    private var pendingAudio: PendingAudio? = null
-    @Volatile
-    private var activePlayStartMs = 0L
     private val playerLock = Any()
 
     private val reqSeq = AtomicInteger(0)
@@ -122,32 +115,42 @@ class EdgeNarrationEngine(
             return
         }
         val seq = reqSeq.incrementAndGet()
+        val voice = resolveVoice(voiceApiName)
+        val cacheFile = getCacheFile(text, voice)
+
+        // Instant Cache Hit on the calling thread: 0ms delay!
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            NarrationDiag.log(appContext, "edge: cache hit len=${text.length} v=$voice")
+            playAudioFile(cacheFile, seq, onResult)
+            return
+        }
+
+        speakWaiting.incrementAndGet()
         worker.execute {
-            if (released) return@execute
-            val voice = resolveVoice(voiceApiName)
-            val cacheFile = getCacheFile(text, voice, ratePercent)
+            try {
+                if (released || seq != reqSeq.get()) return@execute
+                NarrationDiag.log(appContext, "edge: fetch live len=${text.length} v=$voice")
+                val audioBytes = fetchAudio(text, voice, ratePercent)
+                if (released) return@execute
 
-            if (cacheFile.exists() && cacheFile.length() > 0) {
-                NarrationDiag.log(appContext, "edge: cache hit len=${text.length} v=$voice")
-                enqueueAudioFile(cacheFile, seq, onResult)
-                return@execute
-            }
-
-            NarrationDiag.log(appContext, "edge: fetch live len=${text.length} v=$voice")
-            val audioBytes = fetchAudio(text, voice, ratePercent)
-            if (released) return@execute
-
-            if (audioBytes != null && audioBytes.isNotEmpty()) {
-                runCatching {
-                    cacheFile.parentFile?.mkdirs()
-                    FileOutputStream(cacheFile).use { it.write(audioBytes) }
-                    trimCacheIfNeeded()
+                if (audioBytes != null && audioBytes.isNotEmpty()) {
+                    runCatching {
+                        cacheFile.parentFile?.mkdirs()
+                        FileOutputStream(cacheFile).use { it.write(audioBytes) }
+                        trimCacheIfNeeded()
+                    }
+                    if (seq == reqSeq.get()) {
+                        playAudioFile(cacheFile, seq, onResult)
+                    } else {
+                        onResult?.invoke(false, "superseded")
+                    }
+                } else {
+                    NarrationDiag.log(appContext, "edge: fetch failed -> fallback")
+                    mainHandler.post { onError(text, ratePercent) }
+                    onResult?.invoke(false, "edge_fetch_failed")
                 }
-                enqueueAudioFile(cacheFile, seq, onResult)
-            } else {
-                NarrationDiag.log(appContext, "edge: fetch failed -> fallback")
-                mainHandler.post { onError(text, ratePercent) }
-                onResult?.invoke(false, "edge_fetch_failed")
+            } finally {
+                speakWaiting.decrementAndGet()
             }
         }
     }
@@ -155,18 +158,23 @@ class EdgeNarrationEngine(
     override fun prefetch(text: String, voiceApiName: String, ratePercent: Int) {
         if (released || text.isBlank()) return
         val voice = resolveVoice(voiceApiName)
-        val key = "$voice|$ratePercent|$text"
+        val cacheFile = getCacheFile(text, voice)
+        if (cacheFile.exists() && cacheFile.length() > 0) return
+
+        val key = "$voice|$text"
         if (!prefetchInFlight.add(key)) return
 
-        val cacheFile = getCacheFile(text, voice, ratePercent)
-        if (cacheFile.exists() && cacheFile.length() > 0) {
-            prefetchInFlight.remove(key)
-            return
-        }
-
-        prefetchPool.execute {
+        prefetchWorker.execute {
             try {
                 if (released) return@execute
+                // Yield network priority to live speech requests
+                var waited = 0
+                while (speakWaiting.get() > 0 && !released && waited < 2000) {
+                    Thread.sleep(50)
+                    waited += 50
+                }
+                if (released || speakWaiting.get() > 0) return@execute
+
                 val audioBytes = fetchAudio(text, voice, ratePercent)
                 if (audioBytes != null && audioBytes.isNotEmpty() && !released) {
                     cacheFile.parentFile?.mkdirs()
@@ -190,7 +198,7 @@ class EdgeNarrationEngine(
         released = true
         stopPlayback()
         runCatching { worker.shutdownNow() }
-        runCatching { prefetchPool.shutdownNow() }
+        runCatching { prefetchWorker.shutdownNow() }
     }
 
     private fun resolveVoice(voiceApiName: String): String {
@@ -203,8 +211,8 @@ class EdgeNarrationEngine(
         }
     }
 
-    private fun getCacheFile(text: String, voice: String, rate: Int): File {
-        val hash = sha256Hex("$voice|$rate|$text")
+    private fun getCacheFile(text: String, voice: String): File {
+        val hash = sha256Hex("$voice|$text")
         return File(cacheDir, "$hash.mp3")
     }
 
@@ -231,151 +239,131 @@ class EdgeNarrationEngine(
     }
 
     private fun fetchAudio(text: String, voice: String, ratePercent: Int): ByteArray? {
-        val secToken = EdgeDrm.token()
-        val cid = UUID.randomUUID().toString().replace("-", "")
-        val rid = UUID.randomUUID().toString().replace("-", "")
-        val url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
-            "?TrustedClientToken=$TOKEN_URL_PART&ConnectionId=$cid" +
-            "&Sec-MS-GEC=$secToken&Sec-MS-GEC-Version=${EdgeDrm.CHROMIUM_VERSION}"
+        // Serialized through netLock so Bing never sees concurrent WebSockets
+        synchronized(netLock) {
+            val secToken = EdgeDrm.token()
+            val cid = UUID.randomUUID().toString().replace("-", "")
+            val rid = UUID.randomUUID().toString().replace("-", "")
+            val url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
+                "?TrustedClientToken=$TOKEN_URL_PART&ConnectionId=$cid" +
+                "&Sec-MS-GEC=$secToken&Sec-MS-GEC-Version=${EdgeDrm.CHROMIUM_VERSION}"
 
-        val fmt = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-        }
-        val date = fmt.format(Date())
-
-        val config = "X-Timestamp:$date\r\nContent-Type:application/json; charset=utf-8\r\n" +
-            "Path:speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
-            "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
-            "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
-
-        val escapedText = text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&apos;")
-
-        val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
-        val voiceName = if (voice.startsWith("Microsoft Server Speech")) {
-            voice
-        } else {
-            "Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-")})"
-        }
-        val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-            "<voice name='$voiceName'>" +
-            "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>" +
-            escapedText +
-            "</prosody></voice></speak>"
-
-        val ssmlMsg = "X-RequestId:$rid\r\nContent-Type:application/ssml+xml\r\n" +
-            "X-Timestamp:${date}Z\r\nPath:ssml\r\n\r\n$ssmlBody"
-
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Pragma", "no-cache")
-            .addHeader("Cache-Control", "no-cache")
-            .addHeader("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
-            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
-            .addHeader("Accept-Language", "en-US,en;q=0.9")
-            .addHeader("Cookie", "muid=${UUID.randomUUID().toString().replace("-", "").uppercase()};")
-            .build()
-
-        val audioBuffer = ByteArrayOutputStream()
-        val latch = CountDownLatch(1)
-        var errorOccurred = false
-
-        val ws = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(config)
-                webSocket.send(ssmlMsg)
+            val fmt = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
             }
+            val date = fmt.format(Date())
 
-            override fun onMessage(webSocket: WebSocket, textMsg: String) {
-                if (textMsg.contains("Path:turn.end")) {
-                    webSocket.close(1000, null)
-                    latch.countDown()
+            val config = "X-Timestamp:$date\r\nContent-Type:application/json; charset=utf-8\r\n" +
+                "Path:speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
+                "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
+                "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+
+            val escapedText = text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;")
+
+            val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
+            val voiceName = if (voice.startsWith("Microsoft Server Speech")) {
+                voice
+            } else {
+                "Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-")})"
+            }
+            val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+                "<voice name='$voiceName'>" +
+                "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>" +
+                escapedText +
+                "</prosody></voice></speak>"
+
+            val ssmlMsg = "X-RequestId:$rid\r\nContent-Type:application/ssml+xml\r\n" +
+                "X-Timestamp:${date}Z\r\nPath:ssml\r\n\r\n$ssmlBody"
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Pragma", "no-cache")
+                .addHeader("Cache-Control", "no-cache")
+                .addHeader("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+                .addHeader("Accept-Language", "en-US,en;q=0.9")
+                .addHeader("Cookie", "muid=${UUID.randomUUID().toString().replace("-", "").uppercase()};")
+                .build()
+
+            val audioBuffer = ByteArrayOutputStream()
+            val latch = CountDownLatch(1)
+            var errorOccurred = false
+
+            val ws = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send(config)
+                    webSocket.send(ssmlMsg)
                 }
-            }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val d = bytes.toByteArray()
-                if (d.size > 2) {
-                    val headerLen = ((d[0].toInt() and 0xFF) shl 8) or (d[1].toInt() and 0xFF)
-                    if (d.size >= 2 + headerLen) {
-                        val header = String(d, 2, headerLen, Charsets.US_ASCII)
-                        if (header.contains("Path:audio")) {
-                            val audioDataLen = d.size - (2 + headerLen)
-                            if (audioDataLen > 0) {
-                                audioBuffer.write(d, 2 + headerLen, audioDataLen)
+                override fun onMessage(webSocket: WebSocket, textMsg: String) {
+                    if (textMsg.contains("Path:turn.end")) {
+                        webSocket.close(1000, null)
+                        latch.countDown()
+                    }
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    val d = bytes.toByteArray()
+                    if (d.size > 2) {
+                        val headerLen = ((d[0].toInt() and 0xFF) shl 8) or (d[1].toInt() and 0xFF)
+                        if (d.size >= 2 + headerLen) {
+                            val header = String(d, 2, headerLen, Charsets.US_ASCII)
+                            if (header.contains("Path:audio")) {
+                                val audioDataLen = d.size - (2 + headerLen)
+                                if (audioDataLen > 0) {
+                                    audioBuffer.write(d, 2 + headerLen, audioDataLen)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                if (code != 1000) {
-                    NarrationDiag.log(appContext, "edge: ws close code=$code r=$reason")
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    if (code != 1000) {
+                        NarrationDiag.log(appContext, "edge: ws close code=$code r=$reason")
+                    }
+                    latch.countDown()
                 }
-                latch.countDown()
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    latch.countDown()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    val code = response?.code ?: -1
+                    val msg = t.message ?: "unknown"
+                    Log.e(TAG, "WebSocket failure: $msg code=$code")
+                    NarrationDiag.log(appContext, "edge: ws fail code=$code err=$msg")
+                    errorOccurred = true
+                    latch.countDown()
+                }
+            })
+
+            val ok = try {
+                latch.await(SYNTH_TIMEOUT_SEC, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                false
             }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                latch.countDown()
+            if (!ok || errorOccurred) {
+                runCatching { ws.cancel() }
+                return null
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val code = response?.code ?: -1
-                val msg = t.message ?: "unknown"
-                Log.e(TAG, "WebSocket failure: $msg code=$code")
-                NarrationDiag.log(appContext, "edge: ws fail code=$code err=$msg")
-                errorOccurred = true
-                latch.countDown()
-            }
-        })
-
-        val ok = try {
-            latch.await(SYNTH_TIMEOUT_SEC, TimeUnit.SECONDS)
-        } catch (_: InterruptedException) {
-            false
+            val result = audioBuffer.toByteArray()
+            return if (result.isNotEmpty()) result else null
         }
-
-        if (!ok || errorOccurred) {
-            runCatching { ws.cancel() }
-            return null
-        }
-
-        val result = audioBuffer.toByteArray()
-        return if (result.isNotEmpty()) result else null
     }
 
-    private fun enqueueAudioFile(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+    private fun playAudioFile(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+        stopPlayback()
         if (released) {
             onResult?.invoke(false, "released")
             return
-        }
-        val now = SystemClock.uptimeMillis()
-        synchronized(playerLock) {
-            val mp = activePlayer
-            val speakingNow = isSpeaking.get() && mp != null
-            val playDurationMs = now - activePlayStartMs
-
-            if (!speakingNow || playDurationMs > 4500L) {
-                pendingAudio = null
-                startPlaybackLocked(file, seq, onResult)
-            } else {
-                pendingAudio = PendingAudio(file, seq, onResult)
-            }
-        }
-    }
-
-    private fun startPlaybackLocked(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
-        val oldPlayer = activePlayer
-        activePlayer = null
-        if (oldPlayer != null) {
-            runCatching {
-                if (oldPlayer.isPlaying) oldPlayer.stop()
-                oldPlayer.release()
-            }
         }
 
         try {
@@ -395,7 +383,6 @@ class EdgeNarrationEngine(
                     }
                     synchronized(playerLock) {
                         if (activePlayer === mp) {
-                            activePlayStartMs = SystemClock.uptimeMillis()
                             isSpeaking.set(true)
                             mainHandler.post { onSpeechStart() }
                             mp.start()
@@ -406,44 +393,28 @@ class EdgeNarrationEngine(
                     }
                 }
                 setOnCompletionListener { mp ->
-                    var next: PendingAudio? = null
+                    isSpeaking.set(false)
+                    mainHandler.post { onSpeechEnd() }
+                    runCatching { mp.release() }
                     synchronized(playerLock) {
-                        runCatching { mp.release() }
                         if (activePlayer === mp) activePlayer = null
-                        next = pendingAudio
-                        pendingAudio = null
-                    }
-                    if (next != null && !released) {
-                        synchronized(playerLock) {
-                            startPlaybackLocked(next!!.file, next!!.seq, next!!.onResult)
-                        }
-                    } else {
-                        isSpeaking.set(false)
-                        mainHandler.post { onSpeechEnd() }
                     }
                 }
                 setOnErrorListener { mp, what, extra ->
                     Log.w(TAG, "MediaPlayer error what=$what extra=$extra")
-                    var next: PendingAudio? = null
+                    isSpeaking.set(false)
+                    mainHandler.post { onSpeechEnd() }
+                    runCatching { mp.release() }
                     synchronized(playerLock) {
-                        runCatching { mp.release() }
                         if (activePlayer === mp) activePlayer = null
-                        next = pendingAudio
-                        pendingAudio = null
-                    }
-                    if (next != null && !released) {
-                        synchronized(playerLock) {
-                            startPlaybackLocked(next!!.file, next!!.seq, next!!.onResult)
-                        }
-                    } else {
-                        isSpeaking.set(false)
-                        mainHandler.post { onSpeechEnd() }
                     }
                     true
                 }
                 prepareAsync()
             }
-            activePlayer = player
+            synchronized(playerLock) {
+                activePlayer = player
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to start MediaPlayer", t)
             onResult?.invoke(false, "player_failed: ${t.message}")
@@ -452,7 +423,6 @@ class EdgeNarrationEngine(
 
     private fun stopPlayback() {
         synchronized(playerLock) {
-            pendingAudio = null
             val mp = activePlayer
             activePlayer = null
             if (mp != null) {

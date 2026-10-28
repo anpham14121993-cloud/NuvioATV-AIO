@@ -283,7 +283,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
                 if (upcomingText.isNotEmpty()) {
                     nController.prefetch(upcomingText)
                     prefetched++
-                    if (prefetched >= 4) break
+                    if (prefetched >= 2) break
                 }
             }
         }
