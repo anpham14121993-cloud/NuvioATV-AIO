@@ -4108,9 +4108,9 @@
     <string name="player_narration_last_error">Lỗi gần nhất: %1$s</string>
     <string name="player_narration_stage">Bước: %1$s</string>
     <string name="player_narration_test">Nghe thử giọng đọc</string>
-    <string name="playback_narration_info">Thuyết minh tiếng Việt ngoại tuyến (VieNeu TTS). Dò phụ đề đang hiện sẽ được đọc to, đồng thời tiếng phim được hạ nhỏ.</string>
+    <string name="playback_narration_info">Thuyết minh tiếng Việt (Edge TTS trực tuyến với cơ chế dự phòng). Dòng phụ đề đang hiện sẽ được đọc to, đồng thời tiếng phim được hạ nhỏ.</string>
     <string name="playback_narration_enabled">Đọc phụ đề thành tiếng</string>
-    <string name="playback_narration_enabled_sub">Đọc dò phụ đề hiện tại bằng giọng Việt ngoại tuyến có sẵn.</string>
+    <string name="playback_narration_enabled_sub">Đọc dòng phụ đề hiện tại bằng giọng đọc tiếng Việt tự nhiên.</string>
     <string name="playback_narration_volume">Âm lượng thuyết minh</string>
     <string name="playback_narration_volume_sub">Độ lớn của giọng thuyết minh.</string>
     <string name="playback_narration_duck">Âm lượng phim khi thuyết minh</string>

@@ -47,7 +47,7 @@ internal fun PlaybackNarrationSection(
             onValueChange = { value -> onUpdate { setTtsDuckVolume(value) } }
         )
 
-        val voices = listOf("Thùy Dung", "Adam")
+        val voices = listOf("Hoài My", "Nam Minh")
         SettingsActionRow(
             title = stringResource(R.string.playback_narration_voice),
             subtitle = null,

@@ -273,7 +273,7 @@ android {
         abi {
             isEnable = !buildingAppBundle
             reset()
-            include("armeabi-v7a", "arm64-v8a")
+            include("armeabi-v7a")
             isUniversalApk = false
         }
     }
@@ -466,8 +466,8 @@ dependencies {
         "libs/lib-decoder-av1-release.aar"
     ))
     implementation(files("libs/lib-nuvio-engine-android-0.1.5.aar"))
-    // Offline Vietnamese narration engine (VieNeu TTS, bundled ONNX int8 models).
-    implementation(project(":tts"))
+    // ONNX Runtime for Piper TTS offline fallback
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.21.0")
     if (useLocalFfmpegDecoder) {
         implementation(project(":ffmpeg-decoder-downmix"))
     } else {

@@ -35,10 +35,20 @@ class NarrationController(
         private set
 
     private var engine: NarrationTtsEngine? = null
+    private var piperEngine: PiperNarrationEngine? = null
     private var triedCreateEngine = false
 
+    private fun getOrCreatePiperEngine(): PiperNarrationEngine {
+        return piperEngine ?: PiperNarrationEngine(
+            appContext = appContext,
+            onSpeechStart = { notifySpeechStart() },
+            onSpeechEnd = { notifySpeechEnd() },
+            onError = { _, _ -> unduckPlayer() }
+        ).also { piperEngine = it }
+    }
+
     @Volatile
-    var narrationVoice: String = "Thùy Dung"
+    var narrationVoice: String = "Hoài My"
 
     private val ttsReady = AtomicBoolean(false)
     private val speaking = AtomicBoolean(false)
@@ -102,12 +112,12 @@ class NarrationController(
         if (triedCreateEngine) return null
         triedCreateEngine = true
         return runCatching {
-            NarrationDiag.log(appContext, "ctrl: create offline engine")
+            NarrationDiag.log(appContext, "ctrl: create edge narration engine")
             NarrationEngineFactory.create(
                 context = appContext,
                 onSpeechStart = { notifySpeechStart() },
                 onSpeechEnd = { notifySpeechEnd() },
-                onError = { failedText, failedRate -> systemSpeak(failedText, failedRate) },
+                onError = { failedText, failedRate -> handleFallbackSpeak(failedText, failedRate) },
                 onStatus = { state -> status.value = state },
             )
         }.onFailure {
@@ -247,8 +257,8 @@ class NarrationController(
         NarrationDiag.log(appContext, "speak: len=${text.length} rate=$rate w=$rateWindowSec b=$budgetMs")
         val e = engineOrCreate()
         if (e == null) {
-            NarrationDiag.log(appContext, "speak: no engine -> system tts")
-            systemSpeak(text, rate)
+            NarrationDiag.log(appContext, "speak: no engine -> fallback")
+            handleFallbackSpeak(text, rate)
             return
         }
         e.setNarrationVolume(narrationVolume)
@@ -261,9 +271,31 @@ class NarrationController(
                 budgetMs = budgetMs,
             )
         } catch (t: Throwable) {
-            Log.e("NuvioNarration", "Narration speak failed, falling back to system TTS", t)
-            NarrationDiag.log(appContext, "speak: threw ${t.javaClass.simpleName} -> system tts")
+            Log.e("NuvioNarration", "Narration speak failed, falling back", t)
+            NarrationDiag.log(appContext, "speak: threw ${t.javaClass.simpleName} -> fallback")
+            handleFallbackSpeak(text, rate)
+        }
+    }
+
+    private fun handleFallbackSpeak(text: String, rate: Int) {
+        if (systemTtsStatus == SystemTtsStatus.READY && ttsReady.get()) {
+            NarrationDiag.log(appContext, "fallback: Google/System TTS (ready) len=${text.length}")
             systemSpeak(text, rate)
+        } else {
+            NarrationDiag.log(appContext, "fallback: Piper TTS len=${text.length} (sysStatus=$systemTtsStatus)")
+            piperSpeak(text, rate)
+        }
+    }
+
+    private fun piperSpeak(text: String, rate: Int) {
+        try {
+            val piper = getOrCreatePiperEngine()
+            piper.setNarrationVolume(narrationVolume)
+            piper.speak(text, narrationVoice, rate)
+        } catch (t: Throwable) {
+            Log.e("NuvioNarration", "Piper speak failed", t)
+            NarrationDiag.log(appContext, "piper: failed ${t.javaClass.simpleName}")
+            unduckPlayer()
         }
     }
 
@@ -329,8 +361,11 @@ class NarrationController(
         enabled = false
         val e = engine
         engine = null
+        val p = piperEngine
+        piperEngine = null
         triedCreateEngine = false
         runCatching { e?.release() }
+        runCatching { p?.release() }
         runCatching { tts?.stop() }
         runCatching { tts?.shutdown() }
         tts = null
