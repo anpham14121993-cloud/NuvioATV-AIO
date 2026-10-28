@@ -2,6 +2,11 @@ package com.nuvio.tv.core.player.tts
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
@@ -18,6 +23,7 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
@@ -33,8 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Streams high quality Vietnamese neural voices (Hoài My, Nam Minh) via Microsoft Edge
  * Read Aloud WebSocket API. Uses a persistent WebSocket connection with keep-alive,
- * aggressive prefetching, disk caching, and fast synchronous playback preparation
- * to maintain exact subtitle synchronization without lag or engine alternation.
+ * 30-sentence rolling prefetching, disk caching, and fast in-memory PCM decoding
+ * with AudioTrack playback for zero-latency, millisecond-accurate subtitle synchronization.
  */
 class EdgeNarrationEngine(
     private val appContext: Context,
@@ -52,10 +58,17 @@ class EdgeNarrationEngine(
         const val VOICE_MALE = "vi-VN-NamMinhNeural"
 
         private const val MAX_DISK_CACHE_BYTES = 64L * 1024L * 1024L // 64 MB
+        private const val MAX_PCM_CACHE_ENTRIES = 50
         private const val SYNTH_TIMEOUT_SEC = 7L
         private const val CONNECT_TIMEOUT_SEC = 6L
         private const val MAX_CONSECUTIVE_ERRORS_FOR_FALLBACK = 3
     }
+
+    private class PcmAudio(
+        val pcmBytes: ByteArray,
+        val sampleRate: Int,
+        val channelCount: Int,
+    )
 
     private val synthLock = Any()
     private val wsLock = Any()
@@ -79,6 +92,13 @@ class EdgeNarrationEngine(
         Thread(runnable, "nuvio-edge-player").apply { isDaemon = true }
     }
     private val prefetchInFlight = ConcurrentHashMap.newKeySet<String>()
+
+    private val pcmCache = object : LinkedHashMap<String, PcmAudio>(MAX_PCM_CACHE_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PcmAudio>?): Boolean {
+            return size > MAX_PCM_CACHE_ENTRIES
+        }
+    }
+    private val pcmLock = Any()
 
     private class PendingSynth(
         val rid: String,
@@ -104,8 +124,15 @@ class EdgeNarrationEngine(
     private var narrationVolume = 1f
 
     @Volatile
+    private var activeTrack: AudioTrack? = null
+    private val trackLock = Any()
+
+    @Volatile
     private var activePlayer: MediaPlayer? = null
     private val playerLock = Any()
+
+    @Volatile
+    private var currentWatchdog: Runnable? = null
 
     private val reqSeq = AtomicInteger(0)
     private val isSpeaking = AtomicBoolean(false)
@@ -126,6 +153,9 @@ class EdgeNarrationEngine(
 
     override fun setNarrationVolume(volume01: Float) {
         narrationVolume = volume01.coerceIn(0f, 1f)
+        synchronized(trackLock) {
+            runCatching { activeTrack?.setVolume(narrationVolume) }
+        }
         synchronized(playerLock) {
             runCatching { activePlayer?.setVolume(narrationVolume, narrationVolume) }
         }
@@ -145,15 +175,31 @@ class EdgeNarrationEngine(
         }
         val seq = reqSeq.incrementAndGet()
         val voice = resolveVoice(voiceApiName)
-        val cacheFile = getCacheFile(text, voice)
+        val key = getCacheKey(text, voice)
 
-        // Instant Cache Hit: 0ms delay!
-        if (cacheFile.exists() && cacheFile.length() > 0) {
-            NarrationDiag.log(appContext, "edge: cache hit len=${text.length} v=$voice")
-            playAudioFile(cacheFile, seq, onResult)
+        // 1. Instant RAM PCM Hit: 0ms delay!
+        val cachedPcm = synchronized(pcmLock) { pcmCache[key] }
+        if (cachedPcm != null) {
+            NarrationDiag.log(appContext, "edge: ram pcm hit len=${text.length} v=$voice")
+            playPcm(cachedPcm, seq, onResult)
             return
         }
 
+        // 2. Instant Disk Cache Hit: decode and play!
+        val cacheFile = getCacheFile(text, voice)
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            NarrationDiag.log(appContext, "edge: disk cache hit len=${text.length} v=$voice")
+            val pcm = decodeMp3ToPcm(cacheFile)
+            if (pcm != null) {
+                synchronized(pcmLock) { pcmCache[key] = pcm }
+                playPcm(pcm, seq, onResult)
+            } else {
+                playAudioFile(cacheFile, seq, onResult)
+            }
+            return
+        }
+
+        // 3. Network Fetch
         speakWaiting.incrementAndGet()
         worker.execute {
             try {
@@ -169,8 +215,16 @@ class EdgeNarrationEngine(
                         FileOutputStream(cacheFile).use { it.write(audioBytes) }
                         trimCacheIfNeeded()
                     }
+                    val pcm = decodeMp3ToPcm(cacheFile)
+                    if (pcm != null) {
+                        synchronized(pcmLock) { pcmCache[key] = pcm }
+                    }
                     if (seq == reqSeq.get()) {
-                        playAudioFile(cacheFile, seq, onResult)
+                        if (pcm != null) {
+                            playPcm(pcm, seq, onResult)
+                        } else {
+                            playAudioFile(cacheFile, seq, onResult)
+                        }
                     } else {
                         onResult?.invoke(false, "superseded")
                     }
@@ -181,7 +235,6 @@ class EdgeNarrationEngine(
                         NarrationDiag.log(appContext, "edge: $errCount consecutive failures -> fallback")
                         mainHandler.post { onError(text, ratePercent) }
                     } else {
-                        // Avoid alternating engines for transient single failure
                         NarrationDiag.log(appContext, "edge: skip cue to avoid alternating engine")
                     }
                     onResult?.invoke(false, "edge_fetch_failed")
@@ -195,15 +248,29 @@ class EdgeNarrationEngine(
     override fun prefetch(text: String, voiceApiName: String, ratePercent: Int) {
         if (released || text.isBlank()) return
         val voice = resolveVoice(voiceApiName)
-        val cacheFile = getCacheFile(text, voice)
-        if (cacheFile.exists() && cacheFile.length() > 0) return
+        val key = getCacheKey(text, voice)
 
-        val key = "$voice|$text"
+        synchronized(pcmLock) {
+            if (pcmCache.containsKey(key)) return
+        }
+
         if (!prefetchInFlight.add(key)) return
 
         prefetchWorker.execute {
             try {
                 if (released) return@execute
+                val cacheFile = getCacheFile(text, voice)
+
+                // If already on disk, just decode to RAM PCM!
+                if (cacheFile.exists() && cacheFile.length() > 0) {
+                    val pcm = decodeMp3ToPcm(cacheFile)
+                    if (pcm != null) {
+                        synchronized(pcmLock) { pcmCache[key] = pcm }
+                        NarrationDiag.log(appContext, "edge: disk->ram pcm ok len=${text.length}")
+                    }
+                    return@execute
+                }
+
                 // Yield network priority to live speech requests
                 var waited = 0
                 while (speakWaiting.get() > 0 && !released && waited < 2000) {
@@ -217,7 +284,12 @@ class EdgeNarrationEngine(
                     cacheFile.parentFile?.mkdirs()
                     FileOutputStream(cacheFile).use { it.write(audioBytes) }
                     trimCacheIfNeeded()
-                    NarrationDiag.log(appContext, "edge: prefetch ok len=${text.length}")
+
+                    val pcm = decodeMp3ToPcm(cacheFile)
+                    if (pcm != null) {
+                        synchronized(pcmLock) { pcmCache[key] = pcm }
+                        NarrationDiag.log(appContext, "edge: prefetch+pcm ok len=${text.length}")
+                    }
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Prefetch failed: ${t.message}")
@@ -235,6 +307,7 @@ class EdgeNarrationEngine(
         released = true
         stopPlayback()
         closeConnection()
+        synchronized(pcmLock) { pcmCache.clear() }
         runCatching { worker.shutdownNow() }
         runCatching { prefetchWorker.shutdownNow() }
         runCatching { playbackWorker.shutdownNow() }
@@ -250,8 +323,12 @@ class EdgeNarrationEngine(
         }
     }
 
+    private fun getCacheKey(text: String, voice: String): String {
+        return sha256Hex("$voice|$text")
+    }
+
     private fun getCacheFile(text: String, voice: String): File {
-        val hash = sha256Hex("$voice|$text")
+        val hash = getCacheKey(text, voice)
         return File(cacheDir, "$hash.mp3")
     }
 
@@ -418,14 +495,12 @@ class EdgeNarrationEngine(
     }
 
     private fun fetchAudioWithRetry(text: String, voice: String, ratePercent: Int): ByteArray? {
-        // Serialized synthesis so Bing receives 1 request at a time on the persistent socket
         synchronized(synthLock) {
             val firstTry = fetchAudioSingle(text, voice, ratePercent)
             if (firstTry != null && firstTry.isNotEmpty()) {
                 return firstTry
             }
             if (released) return null
-            // If first attempt failed (e.g. stale socket dropped by server), reconnect and retry once!
             NarrationDiag.log(appContext, "edge: synth retry after disconnect")
             closeConnection()
             return fetchAudioSingle(text, voice, ratePercent)
@@ -502,6 +577,207 @@ class EdgeNarrationEngine(
         return fmt.format(Date())
     }
 
+    private fun decodeMp3ToPcm(file: File): PcmAudio? {
+        if (!file.exists() || file.length() == 0L) return null
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        try {
+            extractor.setDataSource(file.absolutePath)
+            var audioTrackIndex = -1
+            var format: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val trackFormat = extractor.getTrackFormat(i)
+                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    format = trackFormat
+                    break
+                }
+            }
+            if (audioTrackIndex < 0 || format == null) return null
+            extractor.selectTrack(audioTrackIndex)
+
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: "audio/mpeg"
+            var sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 24000
+            var channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
+
+            codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(format, null, null, 0)
+            codec.start()
+
+            val outStream = ByteArrayOutputStream(32 * 1024)
+            val info = MediaCodec.BufferInfo()
+            var sawInputEos = false
+            var sawOutputEos = false
+            val timeoutUs = 5000L
+            var noOutputCycles = 0
+
+            while (!sawOutputEos && noOutputCycles < 100) {
+                if (!sawInputEos) {
+                    val inIndex = codec.dequeueInputBuffer(timeoutUs)
+                    if (inIndex >= 0) {
+                        val inBuffer = codec.getInputBuffer(inIndex)
+                        if (inBuffer != null) {
+                            inBuffer.clear()
+                            val sampleSize = extractor.readSampleData(inBuffer, 0)
+                            if (sampleSize < 0) {
+                                codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                sawInputEos = true
+                            } else {
+                                codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val outIndex = codec.dequeueOutputBuffer(info, timeoutUs)
+                if (outIndex >= 0) {
+                    noOutputCycles = 0
+                    val outBuffer = codec.getOutputBuffer(outIndex)
+                    if (outBuffer != null && info.size > 0) {
+                        outBuffer.position(info.offset)
+                        outBuffer.limit(info.offset + info.size)
+                        val chunk = ByteArray(info.size)
+                        outBuffer.get(chunk)
+                        outStream.write(chunk)
+                    }
+                    codec.releaseOutputBuffer(outIndex, false)
+                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        sawOutputEos = true
+                    }
+                } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = codec.outputFormat
+                    if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        sampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    }
+                    if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        channelCount = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                } else if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (sawInputEos) {
+                        noOutputCycles++
+                    }
+                }
+            }
+
+            val pcm = outStream.toByteArray()
+            return if (pcm.isNotEmpty()) PcmAudio(pcm, sampleRate, channelCount) else null
+        } catch (t: Throwable) {
+            Log.w(TAG, "decodeMp3ToPcm failed: ${t.message}")
+            return null
+        } finally {
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            runCatching { extractor.release() }
+        }
+    }
+
+    private fun playPcm(pcm: PcmAudio, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+        if (released) {
+            onResult?.invoke(false, "released")
+            return
+        }
+
+        playbackWorker.execute {
+            if (released || (seq > 0 && seq != reqSeq.get())) {
+                onResult?.invoke(false, "superseded")
+                return@execute
+            }
+
+            stopPlayback()
+
+            try {
+                val channelConfig = if (pcm.channelCount == 2) {
+                    AudioFormat.CHANNEL_OUT_STEREO
+                } else {
+                    AudioFormat.CHANNEL_OUT_MONO
+                }
+
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(pcm.sampleRate)
+                            .setChannelMask(channelConfig)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(pcm.pcmBytes.size)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+
+                track.setVolume(narrationVolume)
+                val written = track.write(pcm.pcmBytes, 0, pcm.pcmBytes.size)
+                if (written <= 0) {
+                    Log.w(TAG, "AudioTrack.write returned $written")
+                    track.release()
+                    onResult?.invoke(false, "track_write_failed")
+                    return@execute
+                }
+
+                val bytesPerFrame = pcm.channelCount * 2
+                val totalFrames = pcm.pcmBytes.size / bytesPerFrame
+                val durationMs = (totalFrames * 1000L) / pcm.sampleRate
+
+                val watchdog = Runnable {
+                    synchronized(trackLock) {
+                        if (activeTrack === track) {
+                            activeTrack = null
+                            isSpeaking.set(false)
+                            mainHandler.post { onSpeechEnd() }
+                            runCatching {
+                                track.stop()
+                                track.release()
+                            }
+                        }
+                    }
+                }
+
+                track.setNotificationMarkerPosition(totalFrames)
+                track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                    override fun onMarkerReached(t: AudioTrack) {
+                        currentWatchdog?.let { mainHandler.removeCallbacks(it) }
+                        isSpeaking.set(false)
+                        mainHandler.post { onSpeechEnd() }
+                        synchronized(trackLock) {
+                            if (activeTrack === t) activeTrack = null
+                        }
+                        runCatching {
+                            t.stop()
+                            t.release()
+                        }
+                    }
+
+                    override fun onPeriodicNotification(t: AudioTrack) {}
+                })
+
+                synchronized(trackLock) {
+                    if (released || (seq > 0 && seq != reqSeq.get())) {
+                        runCatching { track.release() }
+                        return@execute
+                    }
+                    activeTrack = track
+                }
+
+                currentWatchdog = watchdog
+                mainHandler.postDelayed(watchdog, durationMs + 250L)
+                isSpeaking.set(true)
+                mainHandler.post { onSpeechStart() }
+                track.play()
+                onResult?.invoke(true, "playing_pcm")
+            } catch (t: Throwable) {
+                Log.e(TAG, "AudioTrack failed: ${t.message}", t)
+                onResult?.invoke(false, "audio_track_failed: ${t.message}")
+            }
+        }
+    }
+
     private fun playAudioFile(file: File, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
         if (released) {
             onResult?.invoke(false, "released")
@@ -514,6 +790,8 @@ class EdgeNarrationEngine(
                 return@execute
             }
 
+            stopPlayback()
+
             try {
                 val player = MediaPlayer().apply {
                     setAudioAttributes(
@@ -524,7 +802,7 @@ class EdgeNarrationEngine(
                     )
                     setVolume(narrationVolume, narrationVolume)
                     setDataSource(file.absolutePath)
-                    prepare() // Synchronous on dedicated playback worker (~10ms)
+                    prepare()
                     setOnCompletionListener { mp ->
                         isSpeaking.set(false)
                         mainHandler.post { onSpeechEnd() }
@@ -550,18 +828,11 @@ class EdgeNarrationEngine(
                         runCatching { player.release() }
                         return@execute
                     }
-                    val old = activePlayer
                     activePlayer = player
-                    if (old != null) {
-                        runCatching {
-                            if (old.isPlaying) old.stop()
-                            old.release()
-                        }
-                    }
                     player.start()
                     isSpeaking.set(true)
                     mainHandler.post { onSpeechStart() }
-                    onResult?.invoke(true, "playing")
+                    onResult?.invoke(true, "playing_mp3")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to start MediaPlayer", t)
@@ -572,6 +843,24 @@ class EdgeNarrationEngine(
     }
 
     private fun stopPlayback() {
+        currentWatchdog?.let {
+            mainHandler.removeCallbacks(it)
+            currentWatchdog = null
+        }
+        synchronized(trackLock) {
+            val t = activeTrack
+            activeTrack = null
+            if (t != null) {
+                runCatching {
+                    if (t.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        t.pause()
+                        t.flush()
+                    }
+                    t.stop()
+                    t.release()
+                }
+            }
+        }
         synchronized(playerLock) {
             val mp = activePlayer
             activePlayer = null

@@ -167,6 +167,8 @@ internal fun PlayerRuntimeController.startSidecarAddonSubtitle(
             }
 
             sidecarTimedCues = parseResult.cues
+            val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
+            prefetchUpcomingSidecarCues(parseResult.cues, startPosUs, count = 30)
             Log.d(
                 PlayerRuntimeController.TAG,
                 "Sidecar subtitle ready id=${subtitle.id} cues=${parseResult.cues.size} " +
@@ -227,6 +229,8 @@ internal fun PlayerRuntimeController.commitPreparedSidecarSubtitle(
 
     val committedGeneration = activeSidecarGeneration
     sidecarTimedCues = cues
+    val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
+    prefetchUpcomingSidecarCues(cues, startPosUs, count = 30)
     lastSidecarCueSignature = null
     postToSubtitleView { view ->
         view.setTag(R.id.player_view_sidecar_generation_tag, newUrl)
@@ -290,21 +294,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             narration()?.onCueText(text, windowSec)
         }
     }
-    val nController = narration()
-    if (nController != null) {
-        val prefetchHorizonUs = positionUs + 30_000_000L
-        var prefetched = 0
-        for (entry in cues) {
-            if (entry.startTimeUs in (positionUs + 200_000L)..prefetchHorizonUs) {
-                val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
-                if (upcomingText.isNotEmpty()) {
-                    nController.prefetch(upcomingText)
-                    prefetched++
-                    if (prefetched >= 3) break
-                }
-            }
-        }
-    }
+    prefetchUpcomingSidecarCues(cues, positionUs, count = 30)
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return
     postToSubtitleView { view ->
@@ -447,6 +437,27 @@ internal fun parseSidecarTimedCuesLenient(rawText: String, sourceUrl: String): L
 }
 
 /** [cues] must be ordered by [CuesWithTiming.startTimeUs]; the scan stops at the first later cue. */
+internal fun PlayerRuntimeController.prefetchUpcomingSidecarCues(
+    cues: List<CuesWithTiming>,
+    positionUs: Long,
+    count: Int = 30
+) {
+    val nController = narration() ?: return
+    if (cues.isEmpty()) return
+    val prefetchHorizonUs = positionUs + 300_000_000L // 5 minutes rolling horizon
+    var prefetched = 0
+    for (entry in cues) {
+        if (entry.startTimeUs in (positionUs + 200_000L)..prefetchHorizonUs) {
+            val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+            if (upcomingText.isNotEmpty()) {
+                nController.prefetch(upcomingText)
+                prefetched++
+                if (prefetched >= count) break
+            }
+        }
+    }
+}
+
 internal fun collectActiveSidecarCues(
     cues: List<CuesWithTiming>,
     positionUs: Long
