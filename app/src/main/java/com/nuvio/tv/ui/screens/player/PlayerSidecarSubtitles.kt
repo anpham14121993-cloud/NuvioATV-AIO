@@ -168,7 +168,7 @@ internal fun PlayerRuntimeController.startSidecarAddonSubtitle(
 
             sidecarTimedCues = parseResult.cues
             val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
-            prefetchUpcomingSidecarCues(parseResult.cues, startPosUs, count = 30)
+            prefetchUpcomingSidecarCues(parseResult.cues, startPosUs, count = 100)
             Log.d(
                 PlayerRuntimeController.TAG,
                 "Sidecar subtitle ready id=${subtitle.id} cues=${parseResult.cues.size} " +
@@ -230,7 +230,7 @@ internal fun PlayerRuntimeController.commitPreparedSidecarSubtitle(
     val committedGeneration = activeSidecarGeneration
     sidecarTimedCues = cues
     val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
-    prefetchUpcomingSidecarCues(cues, startPosUs, count = 30)
+    prefetchUpcomingSidecarCues(cues, startPosUs, count = 100)
     lastSidecarCueSignature = null
     postToSubtitleView { view ->
         view.setTag(R.id.player_view_sidecar_generation_tag, newUrl)
@@ -294,7 +294,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             narration()?.onCueText(text, windowSec)
         }
     }
-    prefetchUpcomingSidecarCues(cues, positionUs, count = 30)
+    prefetchUpcomingSidecarCues(cues, positionUs, count = 100)
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return
     postToSubtitleView { view ->
@@ -440,14 +440,14 @@ internal fun parseSidecarTimedCuesLenient(rawText: String, sourceUrl: String): L
 internal fun PlayerRuntimeController.prefetchUpcomingSidecarCues(
     cues: List<CuesWithTiming>,
     positionUs: Long,
-    count: Int = 30
+    count: Int = 100
 ) {
     val nController = narration() ?: return
     if (cues.isEmpty()) return
-    val prefetchHorizonUs = positionUs + 300_000_000L // 5 minutes rolling horizon
+    val prefetchHorizonUs = positionUs + 1_200_000_000L // 20 minutes rolling horizon
     var prefetched = 0
     for (entry in cues) {
-        if (entry.startTimeUs in (positionUs + 200_000L)..prefetchHorizonUs) {
+        if (entry.startTimeUs in (positionUs + 50_000L)..prefetchHorizonUs) {
             val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
             if (upcomingText.isNotEmpty()) {
                 nController.prefetch(upcomingText)

@@ -39,8 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Streams high quality Vietnamese neural voices (Hoài My, Nam Minh) via Microsoft Edge
  * Read Aloud WebSocket API. Uses a persistent WebSocket connection with keep-alive,
- * 30-sentence rolling prefetching, disk caching, and fast in-memory PCM decoding
- * with AudioTrack playback for zero-latency, millisecond-accurate subtitle synchronization.
+ * 100-sentence rolling prefetching to disk, in-memory PCM decoding with AudioTrack
+ * and MediaPlayer fail-safe fallback for zero-latency, pause-free continuous subtitle synchronization.
  */
 class EdgeNarrationEngine(
     private val appContext: Context,
@@ -176,23 +176,23 @@ class EdgeNarrationEngine(
         val seq = reqSeq.incrementAndGet()
         val voice = resolveVoice(voiceApiName)
         val key = getCacheKey(text, voice)
+        val cacheFile = getCacheFile(text, voice)
 
         // 1. Instant RAM PCM Hit: 0ms delay!
         val cachedPcm = synchronized(pcmLock) { pcmCache[key] }
         if (cachedPcm != null) {
             NarrationDiag.log(appContext, "edge: ram pcm hit len=${text.length} v=$voice")
-            playPcm(cachedPcm, seq, onResult)
+            playPcm(cacheFile, cachedPcm, seq, onResult)
             return
         }
 
         // 2. Instant Disk Cache Hit: decode and play!
-        val cacheFile = getCacheFile(text, voice)
         if (cacheFile.exists() && cacheFile.length() > 0) {
             NarrationDiag.log(appContext, "edge: disk cache hit len=${text.length} v=$voice")
             val pcm = decodeMp3ToPcm(cacheFile)
             if (pcm != null) {
                 synchronized(pcmLock) { pcmCache[key] = pcm }
-                playPcm(pcm, seq, onResult)
+                playPcm(cacheFile, pcm, seq, onResult)
             } else {
                 playAudioFile(cacheFile, seq, onResult)
             }
@@ -221,7 +221,7 @@ class EdgeNarrationEngine(
                     }
                     if (seq == reqSeq.get()) {
                         if (pcm != null) {
-                            playPcm(pcm, seq, onResult)
+                            playPcm(cacheFile, pcm, seq, onResult)
                         } else {
                             playAudioFile(cacheFile, seq, onResult)
                         }
@@ -254,30 +254,37 @@ class EdgeNarrationEngine(
             if (pcmCache.containsKey(key)) return
         }
 
+        val cacheFile = getCacheFile(text, voice)
+        // If already on disk, decode to RAM PCM if needed
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            val pcm = decodeMp3ToPcm(cacheFile)
+            if (pcm != null) {
+                synchronized(pcmLock) { pcmCache[key] = pcm }
+                NarrationDiag.log(appContext, "edge: disk->ram pcm ok len=${text.length}")
+            }
+            return
+        }
+
         if (!prefetchInFlight.add(key)) return
 
         prefetchWorker.execute {
             try {
                 if (released) return@execute
-                val cacheFile = getCacheFile(text, voice)
 
-                // If already on disk, just decode to RAM PCM!
+                // If already downloaded while waiting in queue, skip fetch
                 if (cacheFile.exists() && cacheFile.length() > 0) {
                     val pcm = decodeMp3ToPcm(cacheFile)
                     if (pcm != null) {
                         synchronized(pcmLock) { pcmCache[key] = pcm }
-                        NarrationDiag.log(appContext, "edge: disk->ram pcm ok len=${text.length}")
                     }
                     return@execute
                 }
 
-                // Yield network priority to live speech requests
-                var waited = 0
-                while (speakWaiting.get() > 0 && !released && waited < 2000) {
+                // If live speech is currently fetching, pause gracefully until it finishes - NEVER ABORT!
+                while (speakWaiting.get() > 0 && !released) {
                     Thread.sleep(50)
-                    waited += 50
                 }
-                if (released || speakWaiting.get() > 0) return@execute
+                if (released) return@execute
 
                 val audioBytes = fetchAudioWithRetry(text, voice, ratePercent)
                 if (audioBytes != null && audioBytes.isNotEmpty() && !released) {
@@ -289,6 +296,8 @@ class EdgeNarrationEngine(
                     if (pcm != null) {
                         synchronized(pcmLock) { pcmCache[key] = pcm }
                         NarrationDiag.log(appContext, "edge: prefetch+pcm ok len=${text.length}")
+                    } else {
+                        NarrationDiag.log(appContext, "edge: prefetch disk ok len=${text.length}")
                     }
                 }
             } catch (t: Throwable) {
@@ -673,7 +682,7 @@ class EdgeNarrationEngine(
         }
     }
 
-    private fun playPcm(pcm: PcmAudio, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
+    private fun playPcm(file: File, pcm: PcmAudio, seq: Int, onResult: ((Boolean, String) -> Unit)?) {
         if (released) {
             onResult?.invoke(false, "released")
             return
@@ -694,6 +703,9 @@ class EdgeNarrationEngine(
                     AudioFormat.CHANNEL_OUT_MONO
                 }
 
+                val minBuf = AudioTrack.getMinBufferSize(pcm.sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+                val bufferSize = if (minBuf > 0 && pcm.pcmBytes.size < minBuf) minBuf else pcm.pcmBytes.size
+
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -708,16 +720,16 @@ class EdgeNarrationEngine(
                             .setChannelMask(channelConfig)
                             .build()
                     )
-                    .setBufferSizeInBytes(pcm.pcmBytes.size)
+                    .setBufferSizeInBytes(bufferSize)
                     .setTransferMode(AudioTrack.MODE_STATIC)
                     .build()
 
                 track.setVolume(narrationVolume)
                 val written = track.write(pcm.pcmBytes, 0, pcm.pcmBytes.size)
                 if (written <= 0) {
-                    Log.w(TAG, "AudioTrack.write returned $written")
+                    Log.w(TAG, "AudioTrack.write failed ($written), falling back to MediaPlayer")
                     track.release()
-                    onResult?.invoke(false, "track_write_failed")
+                    playAudioFile(file, seq, onResult)
                     return@execute
                 }
 
@@ -772,8 +784,8 @@ class EdgeNarrationEngine(
                 track.play()
                 onResult?.invoke(true, "playing_pcm")
             } catch (t: Throwable) {
-                Log.e(TAG, "AudioTrack failed: ${t.message}", t)
-                onResult?.invoke(false, "audio_track_failed: ${t.message}")
+                Log.w(TAG, "AudioTrack play failed (${t.message}), falling back to MediaPlayer", t)
+                playAudioFile(file, seq, onResult)
             }
         }
     }
