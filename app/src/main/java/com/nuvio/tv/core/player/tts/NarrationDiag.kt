@@ -84,6 +84,19 @@ object NarrationDiag {
         if (!f.exists()) "" else f.readLines().takeLast(lines).joinToString("\n")
     }.getOrDefault("")
 
+    /**
+     * Last per-cue timing summary (the engine's "line f=.. pre=.. ac=.."
+     * record). It scrolls out of the 12-line tail after a few heartbeats, so
+     * the dialog reads it separately to keep the speed split on screen.
+     */
+    fun lastLine(context: Context): String = runCatching {
+        val f = file(context)
+        if (!f.exists()) return@runCatching ""
+        val hit = f.readLines().asReversed().firstOrNull { it.contains("line f=") }
+            ?: return@runCatching ""
+        hit.substring(hit.indexOf("line f="))
+    }.getOrDefault("")
+
     fun logcatTail(context: Context, lines: Int = 12): String = runCatching {
         val f = logcatFile(context)
         if (!f.exists()) "" else f.readLines().takeLast(lines).joinToString("\n")

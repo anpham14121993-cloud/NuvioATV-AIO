@@ -413,6 +413,23 @@ class VieneuNarrationEngine(
                 stage("voices: ${voices.size}")
                 onStatus(NarrationEngineStatus.READY)
             } catch (t: Throwable) {
+                if (released) {
+                    // release() interrupts the worker and prefetch threads, so a
+                    // model load that is in flight dies with
+                    // ClosedByInterruptException. This instance is being torn
+                    // down and will never synthesize again: it is a shutdown,
+                    // not a failed load, and the dialog must not report it.
+                    stage("load: aborted (released)")
+                    // If the constructor won the race against release(), the
+                    // close thread may already have run and seen a null field;
+                    // free the engine here under the same lock it uses so the
+                    // 63 MB G2P map and the ORT env do not leak.
+                    synchronized(synthLock) {
+                        runCatching { engine?.close() }
+                        engine = null
+                    }
+                    return null
+                }
                 loadError = t.javaClass.simpleName + ":" + (t.message?.take(60) ?: "")
                 Log.i(TAG, "engine: load FAIL $loadError")
                 Log.e(TAG, "engine load failed", t)

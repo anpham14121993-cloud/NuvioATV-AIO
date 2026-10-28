@@ -219,24 +219,35 @@ internal fun PlayerNarrationDialog(
 private fun NarrationDiagText() {
     val context = LocalContext.current
     val text by produceState(initialValue = "") {
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val crash = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             NarrationDiag.captureLogcatBlocking(context)
-            // Newest first: the visible top of the 8sp box must be the live
-            // prefill heartbeat, not a line from a minute ago.
-            val stages = NarrationDiag.tail(context, 12).lines()
-                .asReversed().joinToString("\n")
-            val prev = NarrationDiag.prevTail(context, 12).lines()
-                .filter { it.isNotBlank() }
-            // release() writes "ctrl: release". If the previous process tail
-            // does not end with it, that process died without closing the
-            // engine (native crash or OOM kill), so show its last stages.
-            val prevLooksCrashed = prev.isNotEmpty() &&
-                prev.lastOrNull()?.contains("ctrl: release") != true
-            val withPrev = if (prevLooksCrashed) {
-                "== LAN TRUOC ==\n" + prev.asReversed().joinToString("\n") + "\n== HIEN TAI ==\n$stages"
-            } else stages
-            val crash = NarrationDiag.logcatTail(context, 20)
-            if (crash.isBlank()) withPrev else "$withPrev\n--- logcat ---\n$crash"
+            NarrationDiag.logcatTail(context, 20)
+        }
+        // Refresh every couple of seconds while the sheet is open: the dialog
+        // used to snapshot once, so the timing line a cue had just written was
+        // never visible without closing and reopening it.
+        while (true) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val timing = NarrationDiag.lastLine(context)
+                // Newest first: the visible top of the 8sp box must be the live
+                // prefill heartbeat, not a line from a minute ago.
+                val stages = NarrationDiag.tail(context, 12).lines()
+                    .asReversed().joinToString("\n")
+                val prev = NarrationDiag.prevTail(context, 12).lines()
+                    .filter { it.isNotBlank() }
+                // release() writes "ctrl: release". If the previous process tail
+                // does not end with it, that process died without closing the
+                // engine (native crash or OOM kill), so show its last stages.
+                val prevLooksCrashed = prev.isNotEmpty() &&
+                    prev.lastOrNull()?.contains("ctrl: release") != true
+                val withPrev = if (prevLooksCrashed) {
+                    "== LAN TRUOC ==\n" + prev.asReversed().joinToString("\n") + "\n== HIEN TAI ==\n$stages"
+                } else stages
+                val head = if (timing.isBlank()) "" else "TOC DO: $timing\n"
+                val all = head + withPrev
+                if (crash.isBlank()) all else "$all\n--- logcat ---\n$crash"
+            }
+            kotlinx.coroutines.delay(2000)
         }
     }
     if (text.isBlank()) return
