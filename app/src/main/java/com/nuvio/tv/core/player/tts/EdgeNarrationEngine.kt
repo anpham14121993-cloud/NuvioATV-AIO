@@ -244,8 +244,13 @@ class EdgeNarrationEngine(
             .replace("'", "&apos;")
 
         val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
-        val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='vi-VN'>" +
-            "<voice name='Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-").removeSuffix("Neural")})'>" +
+        val voiceName = if (voice.startsWith("Microsoft Server Speech")) {
+            voice
+        } else {
+            "Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-")})"
+        }
+        val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+            "<voice name='$voiceName'>" +
             "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>" +
             escapedText +
             "</prosody></voice></speak>"
@@ -255,10 +260,11 @@ class EdgeNarrationEngine(
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
-            .addHeader("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
             .addHeader("Pragma", "no-cache")
             .addHeader("Cache-Control", "no-cache")
+            .addHeader("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+            .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+            .addHeader("Accept-Language", "en-US,en;q=0.9")
             .addHeader("Cookie", "muid=${UUID.randomUUID().toString().replace("-", "").uppercase()};")
             .build()
 
@@ -296,6 +302,9 @@ class EdgeNarrationEngine(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                if (code != 1000) {
+                    NarrationDiag.log(appContext, "edge: ws close code=$code r=$reason")
+                }
                 latch.countDown()
             }
 
@@ -304,7 +313,10 @@ class EdgeNarrationEngine(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure: ${t.message} code=${response?.code}")
+                val code = response?.code ?: -1
+                val msg = t.message ?: "unknown"
+                Log.e(TAG, "WebSocket failure: $msg code=$code")
+                NarrationDiag.log(appContext, "edge: ws fail code=$code err=$msg")
                 errorOccurred = true
                 latch.countDown()
             }

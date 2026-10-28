@@ -4137,9 +4137,9 @@
     <string name="player_narration_show_subtitles_sub">Keep the subtitles on screen while the narration speaks.</string>
     <string name="player_narration_hide_subtitles">Hide subtitles</string>
     <string name="player_narration_hide_subtitles_sub">Only hear the narration; the subtitles stay off the screen.</string>
-    <string name="player_narration_status_loading">Loading the offline voice model, this can take a moment.</string>
-    <string name="player_narration_status_ready">The offline voice is ready.</string>
-    <string name="player_narration_status_failed">The offline voice model could not be loaded. Free some storage and try again.</string>
+    <string name="player_narration_status_loading">Preparing narration voice...</string>
+    <string name="player_narration_status_ready">Narration voice is ready.</string>
+    <string name="player_narration_status_failed">Could not initialize narration voice.</string>
     <string name="player_narration_last_cue">Last subtitle line: %1$s</string>
     <string name="player_narration_no_cue">No subtitle line has reached the narration yet.</string>
     <string name="player_narration_last_error">Last error: %1$s</string>
