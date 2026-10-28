@@ -271,19 +271,36 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     if (merged.isNotEmpty()) {
         // Narrate the sidecar line as well; it never reaches ExoPlayer's onCues.
         val text = merged.joinToString(" ") { it.text.toString() }.trim()
-        if (text.isNotEmpty()) narration()?.onCueText(text)
+        if (text.isNotEmpty()) {
+            val activeEntry = cues.firstOrNull { entry ->
+                positionUs >= entry.startTimeUs && positionUs < when {
+                    entry.endTimeUs != C.TIME_UNSET -> entry.endTimeUs
+                    entry.durationUs != C.TIME_UNSET -> entry.startTimeUs + entry.durationUs
+                    else -> Long.MAX_VALUE
+                }
+            }
+            val windowSec = activeEntry?.let { entry ->
+                val duration = when {
+                    entry.durationUs != C.TIME_UNSET && entry.durationUs > 0 -> entry.durationUs
+                    entry.endTimeUs != C.TIME_UNSET && entry.endTimeUs > entry.startTimeUs -> entry.endTimeUs - entry.startTimeUs
+                    else -> 0L
+                }
+                if (duration > 0) (duration / 1_000_000f).coerceIn(1.0f, 6.0f) else null
+            }
+            narration()?.onCueText(text, windowSec)
+        }
     }
     val nController = narration()
     if (nController != null) {
-        val prefetchHorizonUs = positionUs + 25_000_000L
+        val prefetchHorizonUs = positionUs + 30_000_000L
         var prefetched = 0
         for (entry in cues) {
-            if (entry.startTimeUs in (positionUs + 1_000_000L)..prefetchHorizonUs) {
+            if (entry.startTimeUs in (positionUs + 200_000L)..prefetchHorizonUs) {
                 val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
                 if (upcomingText.isNotEmpty()) {
                     nController.prefetch(upcomingText)
                     prefetched++
-                    if (prefetched >= 2) break
+                    if (prefetched >= 3) break
                 }
             }
         }

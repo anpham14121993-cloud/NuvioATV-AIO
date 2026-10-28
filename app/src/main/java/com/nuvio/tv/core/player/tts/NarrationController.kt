@@ -480,7 +480,7 @@ class NarrationController(
         const val MAX_RATE_BUMP_PERCENT = 50
         const val NEXT_CUE_GUARD_MS = 120L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f
-        const val RATE_STEP = 10
+        const val RATE_STEP = 5
 
         private const val VI_STRICT = "đĐăĂơƠưƯ"
         private const val VI_BROAD_ACCENTS =
