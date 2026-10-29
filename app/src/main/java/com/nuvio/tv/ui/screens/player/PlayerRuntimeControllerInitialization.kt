@@ -1779,6 +1779,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                         reason: Int
                     ) {
                         if (isReleasingPlayer || reason != Player.DISCONTINUITY_REASON_SEEK) return
+                        lastNarratedCueStartTimeUs = -1L
+                        narration()?.stopSpeaking()
+                        narration()?.clearPrefetchQueue()
                         // Holding the seek button emits a discontinuity per step, and reading the
                         // span set on each one is real work on a cache holding thousands of spans.
                         val seekedToMs = newPosition.positionMs

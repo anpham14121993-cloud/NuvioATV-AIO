@@ -5,7 +5,6 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,6 +25,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -34,9 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * Microsoft Edge TTS online narration engine.
  *
  * Streams high quality Vietnamese neural voices (Hoài My, Nam Minh) via Microsoft Edge
- * Read Aloud WebSocket API. Uses rolling RAM cache (30 sentences) and persistent disk cache,
- * with fast MediaPlayer playback and deduplicated in-flight prefetching for zero-latency,
- * pause-free continuous subtitle synchronization.
+ * Read Aloud WebSocket API. Uses a rolling RAM cache (30 sentences) and persistent disk
+ * cache (up to 128 MB), with fast MediaPlayer playback and deduplicated in-flight
+ * prefetching for zero-latency, pause-free continuous subtitle synchronization.
  */
 class EdgeNarrationEngine(
     private val appContext: Context,
@@ -53,13 +54,12 @@ class EdgeNarrationEngine(
         const val VOICE_FEMALE = "vi-VN-HoaiMyNeural"
         const val VOICE_MALE = "vi-VN-NamMinhNeural"
 
-        private const val MAX_DISK_CACHE_BYTES = 64L * 1024L * 1024L // 64 MB
+        private const val MAX_DISK_CACHE_BYTES = 128L * 1024L * 1024L // 128 MB
         private const val MAX_RAM_CACHE_ENTRIES = 30
-        private const val SYNTH_TIMEOUT_SEC = 4L
-        private const val CONNECT_TIMEOUT_SEC = 5L
-        private const val MAX_CONSECUTIVE_ERRORS_FOR_FALLBACK = 3
-        private const val MAX_CONNECTION_AGE_MS = 180_000L // 3 minutes
-        private const val MAX_IDLE_AGE_MS = 35_000L // 35 seconds
+        private const val SYNTH_TIMEOUT_SEC = 8L
+        private const val CONNECT_TIMEOUT_SEC = 6L
+        private const val MAX_CONSECUTIVE_ERRORS_FOR_FALLBACK = 5
+        private const val PREFETCH_PACE_MS = 350L
     }
 
     private class InFlightJob {
@@ -70,32 +70,28 @@ class EdgeNarrationEngine(
 
     private val inFlightJobs = ConcurrentHashMap<String, InFlightJob>()
 
-    private val synthLock = Any()
-    private val wsLock = Any()
-
-    @Volatile
-    private var activeWs: WebSocket? = null
-    @Volatile
-    private var isConnected = false
-    private var connectLatch: CountDownLatch? = null
-    @Volatile
-    private var connectionCreatedMs = 0L
-    @Volatile
-    private var lastActivityMs = 0L
-
     private val consecutiveErrors = AtomicInteger(0)
     private val speakWaiting = AtomicInteger(0)
 
+    // High priority single-thread executor for live speech network fetching
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "nuvio-edge-tts").apply { isDaemon = true }
     }
-    private val prefetchWorker = Executors.newSingleThreadExecutor { runnable ->
+
+    // Paced background prefetch executor with clearable queue
+    private val prefetchQueue = LinkedBlockingQueue<Runnable>()
+    private val prefetchExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, prefetchQueue
+    ) { runnable ->
         Thread(runnable, "nuvio-edge-prefetch").apply { isDaemon = true }
     }
+
+    // Playback worker for MediaPlayer
     private val playbackWorker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "nuvio-edge-player").apply { isDaemon = true }
     }
 
+    // Rolling RAM cache for exactly 30 sentences (FIFO/LRU)
     private val ramCache = object : LinkedHashMap<String, ByteArray>(MAX_RAM_CACHE_ENTRIES, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
             return size > MAX_RAM_CACHE_ENTRIES
@@ -103,25 +99,15 @@ class EdgeNarrationEngine(
     }
     private val ramLock = Any()
 
-    private class PendingSynth(
-        val rid: String,
-        val buffer: ByteArrayOutputStream = ByteArrayOutputStream(),
-        val latch: CountDownLatch = CountDownLatch(1),
-        @Volatile var failed: Boolean = false,
-    )
-
-    @Volatile
-    private var currentActiveSynth: PendingSynth? = null
-
     private val mainHandler = Handler(Looper.getMainLooper())
     private val cacheDir = File(appContext.cacheDir, "edge_tts_cache_v2").apply { mkdirs() }
 
     private val client by lazy {
         OkHttpClient.Builder()
-            .pingInterval(20, TimeUnit.SECONDS)
             .connectTimeout(CONNECT_TIMEOUT_SEC, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(SYNTH_TIMEOUT_SEC + 2L, TimeUnit.SECONDS)
+            .writeTimeout(SYNTH_TIMEOUT_SEC, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
@@ -141,12 +127,15 @@ class EdgeNarrationEngine(
         if (released) return
         onStatus(NarrationEngineStatus.READY)
         NarrationDiag.log(appContext, "edge: warmed up (ready)")
-        // Pre-connect WebSocket in the background so it is ready before the first cue
         worker.execute {
             if (!released) {
-                runCatching { getOrCreateConnection() }
+                runCatching { trimCacheIfNeeded() }
             }
         }
+    }
+
+    override fun clearPrefetchQueue() {
+        prefetchQueue.clear()
     }
 
     override fun setNarrationVolume(volume01: Float) {
@@ -176,28 +165,34 @@ class EdgeNarrationEngine(
         // 1. Instant RAM Cache Hit (0ms delay)
         val ramAudio = synchronized(ramLock) { ramCache[key] }
         if (ramAudio != null && ramAudio.isNotEmpty()) {
-            NarrationDiag.log(appContext, "edge: ram hit len=${text.length} v=$voice")
+            consecutiveErrors.set(0)
+            NarrationDiag.log(appContext, "edge: ram hit len=${text.length}")
             playAudio(cacheFile, ramAudio, seq, onResult)
             return
         }
 
-        // 2. Instant Disk Cache Hit
+        // 2. Instant Disk Cache Hit (<2ms delay)
         if (cacheFile.exists() && cacheFile.length() > 0) {
-            NarrationDiag.log(appContext, "edge: disk hit len=${text.length} v=$voice")
             val diskBytes = runCatching { cacheFile.readBytes() }.getOrNull()
             if (diskBytes != null && diskBytes.isNotEmpty()) {
+                consecutiveErrors.set(0)
                 synchronized(ramLock) { ramCache[key] = diskBytes }
+                NarrationDiag.log(appContext, "edge: disk hit len=${text.length}")
                 playAudio(cacheFile, diskBytes, seq, onResult)
                 return
             }
         }
 
-        // 3. Network Fetch with in-flight deduplication
+        // 3. Network Fetch with in-flight deduplication (high priority)
         speakWaiting.incrementAndGet()
         worker.execute {
             try {
-                if (released || seq != reqSeq.get()) return@execute
+                if (released || seq != reqSeq.get()) {
+                    onResult?.invoke(false, "superseded")
+                    return@execute
+                }
                 NarrationDiag.log(appContext, "edge: fetch live len=${text.length} v=$voice")
+
                 val audioBytes = fetchAudioShared(text, voice, ratePercent, key)
                 if (released) return@execute
 
@@ -216,7 +211,7 @@ class EdgeNarrationEngine(
                     }
                 } else {
                     val errCount = consecutiveErrors.incrementAndGet()
-                    NarrationDiag.log(appContext, "edge: fetch failed (consecutive=$errCount)")
+                    NarrationDiag.log(appContext, "edge: live failed (consecutive=$errCount)")
                     if (errCount >= MAX_CONSECUTIVE_ERRORS_FOR_FALLBACK) {
                         NarrationDiag.log(appContext, "edge: $errCount consecutive failures -> fallback")
                         mainHandler.post { onError(text, ratePercent) }
@@ -253,7 +248,7 @@ class EdgeNarrationEngine(
 
         if (inFlightJobs.containsKey(key)) return
 
-        prefetchWorker.execute {
+        prefetchExecutor.execute {
             try {
                 if (released) return@execute
                 if (cacheFile.exists() && cacheFile.length() > 0) {
@@ -266,9 +261,9 @@ class EdgeNarrationEngine(
                     return@execute
                 }
 
-                // If live speech is actively fetching, yield briefly
+                // If live speech is fetching, pause prefetch to grant full network bandwidth
                 while (speakWaiting.get() > 0 && !released) {
-                    Thread.sleep(50)
+                    Thread.sleep(60)
                 }
                 if (released) return@execute
 
@@ -280,10 +275,10 @@ class EdgeNarrationEngine(
                     trimCacheIfNeeded()
                     NarrationDiag.log(appContext, "edge: prefetch ok len=${text.length}")
                 }
-                // Small pause between prefetch requests to pace traffic
-                Thread.sleep(50)
+                // Paced prefetch to respect Microsoft burst limits
+                Thread.sleep(PREFETCH_PACE_MS)
             } catch (t: Throwable) {
-                Log.w(TAG, "Prefetch failed: ${t.message}")
+                Log.w(TAG, "Prefetch error: ${t.message}")
             }
         }
     }
@@ -295,11 +290,11 @@ class EdgeNarrationEngine(
     override fun release() {
         released = true
         stopPlayback()
-        closeConnection()
+        clearPrefetchQueue()
         synchronized(ramLock) { ramCache.clear() }
         inFlightJobs.clear()
         runCatching { worker.shutdownNow() }
-        runCatching { prefetchWorker.shutdownNow() }
+        runCatching { prefetchExecutor.shutdownNow() }
         runCatching { playbackWorker.shutdownNow() }
     }
 
@@ -349,7 +344,7 @@ class EdgeNarrationEngine(
         val existingJob = inFlightJobs.putIfAbsent(key, newJob)
         if (existingJob != null) {
             try {
-                existingJob.latch.await(SYNTH_TIMEOUT_SEC + 1L, TimeUnit.SECONDS)
+                existingJob.latch.await(SYNTH_TIMEOUT_SEC + 2L, TimeUnit.SECONDS)
             } catch (_: InterruptedException) {
                 return null
             }
@@ -367,42 +362,29 @@ class EdgeNarrationEngine(
         }
     }
 
-    private fun getOrCreateConnection(): WebSocket? {
-        if (released) return null
-        val now = SystemClock.elapsedRealtime()
-        synchronized(wsLock) {
-            if (isConnected && activeWs != null) {
-                val age = now - connectionCreatedMs
-                val idle = now - lastActivityMs
-                if (age < MAX_CONNECTION_AGE_MS && idle < MAX_IDLE_AGE_MS) {
-                    return activeWs
-                }
-                closeConnectionLocked()
+    private fun fetchAudioWithRetry(text: String, voice: String, ratePercent: Int, maxRetries: Int = 2): ByteArray? {
+        var attempts = 0
+        while (attempts <= maxRetries && !released) {
+            attempts++
+            val bytes = fetchAudioNetwork(text, voice, ratePercent)
+            if (bytes != null && bytes.isNotEmpty()) {
+                return bytes
             }
-            val existing = connectLatch
-            if (existing != null && existing.count > 0) {
-                // Connection currently establishing
-            } else {
-                val latch = CountDownLatch(1)
-                connectLatch = latch
-                startNewConnection(latch)
+            if (attempts <= maxRetries && !released) {
+                NarrationDiag.log(appContext, "edge: retry attempt $attempts len=${text.length}")
+                runCatching { Thread.sleep(200) }
             }
         }
-
-        try {
-            connectLatch?.await(CONNECT_TIMEOUT_SEC + 1L, TimeUnit.SECONDS)
-        } catch (_: InterruptedException) {
-            // ignore
-        }
-
-        synchronized(wsLock) {
-            return if (isConnected) activeWs else null
-        }
+        return null
     }
 
-    private fun startNewConnection(latch: CountDownLatch) {
+    private fun fetchAudioNetwork(text: String, voice: String, ratePercent: Int): ByteArray? {
+        if (released) return null
+        val latch = CountDownLatch(1)
+        val buffer = ByteArrayOutputStream()
         val secToken = EdgeDrm.token()
         val cid = UUID.randomUUID().toString().replace("-", "")
+        val rid = UUID.randomUUID().toString().replace("-", "")
         val url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
             "?TrustedClientToken=$TOKEN_URL_PART&ConnectionId=$cid" +
             "&Sec-MS-GEC=$secToken&Sec-MS-GEC-Version=${EdgeDrm.CHROMIUM_VERSION}"
@@ -417,34 +399,51 @@ class EdgeNarrationEngine(
             .addHeader("Cookie", "muid=${UUID.randomUUID().toString().replace("-", "").uppercase()};")
             .build()
 
-        client.newWebSocket(request, object : WebSocketListener() {
+        val date = formatUtcDate()
+        val escapedText = text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
+
+        val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
+        val voiceName = if (voice.startsWith("Microsoft Server Speech")) {
+            voice
+        } else {
+            "Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-")})"
+        }
+        val configMsg = "X-Timestamp:$date\r\nContent-Type:application/json; charset=utf-8\r\n" +
+            "Path:speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
+            "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
+            "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+
+        val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+            "<voice name='$voiceName'>" +
+            "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>" +
+            escapedText +
+            "</prosody></voice></speak>"
+
+        val ssmlMsg = "X-RequestId:$rid\r\nContent-Type:application/ssml+xml\r\n" +
+            "X-Timestamp:${date}Z\r\nPath:ssml\r\n\r\n$ssmlBody"
+
+        var wsRef: WebSocket? = null
+        var completedCleanly = false
+
+        val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val date = formatUtcDate()
-                val config = "X-Timestamp:$date\r\nContent-Type:application/json; charset=utf-8\r\n" +
-                    "Path:speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
-                    "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
-                    "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
-                webSocket.send(config)
-                synchronized(wsLock) {
-                    activeWs = webSocket
-                    isConnected = true
-                    val now = SystemClock.elapsedRealtime()
-                    connectionCreatedMs = now
-                    lastActivityMs = now
-                }
-                NarrationDiag.log(appContext, "edge: ws connected")
-                latch.countDown()
+                webSocket.send(configMsg)
+                webSocket.send(ssmlMsg)
             }
 
             override fun onMessage(webSocket: WebSocket, textMsg: String) {
-                lastActivityMs = SystemClock.elapsedRealtime()
                 if (textMsg.contains("Path:turn.end")) {
-                    currentActiveSynth?.latch?.countDown()
+                    completedCleanly = true
+                    latch.countDown()
+                    runCatching { webSocket.close(1000, "done") }
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                lastActivityMs = SystemClock.elapsedRealtime()
                 val d = bytes.toByteArray()
                 if (d.size > 2) {
                     val headerLen = ((d[0].toInt() and 0xFF) shl 8) or (d[1].toInt() and 0xFF)
@@ -453,10 +452,8 @@ class EdgeNarrationEngine(
                         if (header.contains("Path:audio")) {
                             val audioDataLen = d.size - (2 + headerLen)
                             if (audioDataLen > 0) {
-                                currentActiveSynth?.let { synth ->
-                                    synchronized(synth.buffer) {
-                                        synth.buffer.write(d, 2 + headerLen, audioDataLen)
-                                    }
+                                synchronized(buffer) {
+                                    buffer.write(d, 2 + headerLen, audioDataLen)
                                 }
                             }
                         }
@@ -464,120 +461,33 @@ class EdgeNarrationEngine(
                 }
             }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                handleDisconnect("closing code=$code")
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.w(TAG, "WebSocket failure: ${t.message} code=${response?.code}")
                 latch.countDown()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                handleDisconnect("closed code=$code")
-                latch.countDown()
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val code = response?.code ?: -1
-                val msg = t.message ?: "unknown"
-                Log.w(TAG, "WebSocket failure: $msg code=$code")
-                NarrationDiag.log(appContext, "edge: ws fail code=$code msg=$msg")
-                handleDisconnect("failure")
                 latch.countDown()
             }
         })
-    }
-
-    private fun handleDisconnect(reason: String) {
-        synchronized(wsLock) {
-            isConnected = false
-            activeWs = null
-            connectLatch = null
-        }
-        currentActiveSynth?.let {
-            it.failed = true
-            it.latch.countDown()
-        }
-    }
-
-    private fun closeConnectionLocked() {
-        isConnected = false
-        val ws = activeWs
-        activeWs = null
-        connectLatch = null
-        runCatching { ws?.close(1000, "normal") }
-        currentActiveSynth?.let {
-            it.failed = true
-            it.latch.countDown()
-        }
-    }
-
-    private fun closeConnection() {
-        synchronized(wsLock) {
-            closeConnectionLocked()
-        }
-    }
-
-    private fun fetchAudioWithRetry(text: String, voice: String, ratePercent: Int): ByteArray? {
-        synchronized(synthLock) {
-            val firstTry = fetchAudioSingle(text, voice, ratePercent)
-            if (firstTry != null && firstTry.isNotEmpty()) {
-                return firstTry
-            }
-            if (released) return null
-            NarrationDiag.log(appContext, "edge: synth retry after disconnect")
-            closeConnection()
-            return fetchAudioSingle(text, voice, ratePercent)
-        }
-    }
-
-    private fun fetchAudioSingle(text: String, voice: String, ratePercent: Int): ByteArray? {
-        if (released) return null
-        val ws = getOrCreateConnection() ?: return null
-        val rid = UUID.randomUUID().toString().replace("-", "")
-        val synth = PendingSynth(rid)
-        currentActiveSynth = synth
+        wsRef = ws
 
         try {
-            val date = formatUtcDate()
-            val escapedText = text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&apos;")
-
-            val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
-            val voiceName = if (voice.startsWith("Microsoft Server Speech")) {
-                voice
-            } else {
-                "Microsoft Server Speech Text to Speech Voice (vi-VN, ${voice.removePrefix("vi-VN-")})"
-            }
-            val ssmlBody = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-                "<voice name='$voiceName'>" +
-                "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>" +
-                escapedText +
-                "</prosody></voice></speak>"
-
-            val ssmlMsg = "X-RequestId:$rid\r\nContent-Type:application/ssml+xml\r\n" +
-                "X-Timestamp:${date}Z\r\nPath:ssml\r\n\r\n$ssmlBody"
-
-            val sent = ws.send(ssmlMsg)
-            if (!sent) {
-                Log.w(TAG, "Failed to send SSML frame on WebSocket")
-                return null
-            }
-
-            val completed = try {
-                synth.latch.await(SYNTH_TIMEOUT_SEC, TimeUnit.SECONDS)
-            } catch (_: InterruptedException) {
-                false
-            }
-
-            val bytes = synchronized(synth.buffer) { synth.buffer.toByteArray() }
-            if (bytes.isNotEmpty() && (!synth.failed || bytes.size > 2000)) {
-                return bytes
-            }
+            latch.await(SYNTH_TIMEOUT_SEC, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            runCatching { wsRef?.cancel() }
             return null
-        } finally {
-            currentActiveSynth = null
         }
+
+        val resultBytes = synchronized(buffer) { buffer.toByteArray() }
+        if (completedCleanly && resultBytes.isNotEmpty()) {
+            return resultBytes
+        }
+        if (resultBytes.size > 3000) {
+            return resultBytes
+        }
+        runCatching { wsRef?.cancel() }
+        return null
     }
 
     private fun formatUtcDate(): String {

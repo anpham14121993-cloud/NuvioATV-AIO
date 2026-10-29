@@ -249,6 +249,10 @@ class NarrationController(
         e.prefetch(clean, narrationVoice, rate)
     }
 
+    fun clearPrefetchQueue() {
+        runCatching { engine?.clearPrefetchQueue() }
+    }
+
     private fun speakResolved(
         text: String,
         rateWindowSec: Float?,
@@ -479,8 +483,8 @@ class NarrationController(
         const val FADE_STEP_MS = 30L
         const val VI_CHARS_PER_SECOND = 18f
         const val MIN_SPEECH_WINDOW_SEC = 1.0f
-        const val BASE_RATE_PERCENT = 35
-        const val MAX_RATE_BUMP_PERCENT = 65
+        const val BASE_RATE_PERCENT = 40
+        const val MAX_RATE_BUMP_PERCENT = 70
         const val NEXT_CUE_GUARD_MS = 100L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f
         const val RATE_STEP = 5

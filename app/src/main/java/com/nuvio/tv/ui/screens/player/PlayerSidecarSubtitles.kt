@@ -268,16 +268,25 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     // Narrate each cue entry exactly at its start time to prevent missed cues during dialogue overlap
     val nController = narration()
     if (nController != null) {
-        val activeEntry = cues.lastOrNull { entry ->
-            positionUs >= entry.startTimeUs && (positionUs - entry.startTimeUs) < 2_500_000L
+        // Reset tracking if playhead jumped backwards (seek / loop)
+        if (lastNarratedCueStartTimeUs > 0L && positionUs < lastNarratedCueStartTimeUs - 1_500_000L) {
+            lastNarratedCueStartTimeUs = -1L
         }
-        if (activeEntry != null && activeEntry.startTimeUs != lastNarratedCueStartTimeUs) {
-            lastNarratedCueStartTimeUs = activeEntry.startTimeUs
-            val entryText = activeEntry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+        val candidate = cues.firstOrNull { entry ->
+            entry.startTimeUs > lastNarratedCueStartTimeUs &&
+                positionUs >= entry.startTimeUs &&
+                (positionUs - entry.startTimeUs) < 2_500_000L
+        }
+        if (candidate != null) {
+            lastNarratedCueStartTimeUs = candidate.startTimeUs
+            val sameTimeCues = cues.filter { it.startTimeUs == candidate.startTimeUs }
+            val entryText = sameTimeCues.flatMap { it.cues }
+                .joinToString(" ") { it.text?.toString() ?: "" }
+                .trim()
             if (entryText.isNotEmpty()) {
                 val windowSec = when {
-                    activeEntry.durationUs != C.TIME_UNSET && activeEntry.durationUs > 0 -> activeEntry.durationUs / 1_000_000f
-                    activeEntry.endTimeUs != C.TIME_UNSET && activeEntry.endTimeUs > activeEntry.startTimeUs -> (activeEntry.endTimeUs - activeEntry.startTimeUs) / 1_000_000f
+                    candidate.durationUs != C.TIME_UNSET && candidate.durationUs > 0 -> candidate.durationUs / 1_000_000f
+                    candidate.endTimeUs != C.TIME_UNSET && candidate.endTimeUs > candidate.startTimeUs -> (candidate.endTimeUs - candidate.startTimeUs) / 1_000_000f
                     else -> null
                 }?.coerceIn(1.0f, 6.0f)
                 nController.onCueText(entryText, windowSec)

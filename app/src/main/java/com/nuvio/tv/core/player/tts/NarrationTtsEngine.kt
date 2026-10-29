@@ -35,4 +35,7 @@ interface NarrationTtsEngine {
 
     /** Releases all resources. */
     fun release()
+
+    /** Clears any pending background prefetch queue (e.g. on seek). */
+    fun clearPrefetchQueue() {}
 }
