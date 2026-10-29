@@ -114,7 +114,7 @@ class EdgeNarrationEngine(
     private var currentActiveSynth: PendingSynth? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val cacheDir = File(appContext.cacheDir, "edge_tts_cache").apply { mkdirs() }
+    private val cacheDir = File(appContext.cacheDir, "edge_tts_cache_v2").apply { mkdirs() }
 
     private val client by lazy {
         OkHttpClient.Builder()

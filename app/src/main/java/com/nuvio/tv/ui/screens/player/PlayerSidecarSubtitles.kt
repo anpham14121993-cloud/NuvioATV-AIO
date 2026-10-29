@@ -101,6 +101,7 @@ internal fun PlayerRuntimeController.stopSidecarAddonSubtitle(clearView: Boolean
     AutoSyncSyncedSubtitle.clear() // AutoSync hook
     sidecarTimedCues = emptyList()
     lastSidecarCueSignature = null
+    lastNarratedCueStartTimeUs = -1L
     if (clearView) {
         postToSubtitleView { view ->
             view.setTag(R.id.player_view_sidecar_generation_tag, null)
@@ -128,6 +129,7 @@ internal fun PlayerRuntimeController.startSidecarAddonSubtitle(
     AutoSyncSyncedSubtitle.clear() // AutoSync hook
     activeSidecarSubtitleKey = subtitleKey
     lastSidecarCueSignature = null
+    lastNarratedCueStartTimeUs = -1L
     sidecarTimedCues = emptyList()
     postToSubtitleView { view ->
         view.setTag(R.id.player_view_sidecar_generation_tag, subtitleKey)
@@ -232,6 +234,7 @@ internal fun PlayerRuntimeController.commitPreparedSidecarSubtitle(
     val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
     prefetchUpcomingSidecarCues(cues, startPosUs, count = 100)
     lastSidecarCueSignature = null
+    lastNarratedCueStartTimeUs = -1L
     postToSubtitleView { view ->
         view.setTag(R.id.player_view_sidecar_generation_tag, newUrl)
     }
@@ -261,6 +264,27 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             audioDelayUs.get() -
             subtitleDelayUs.get()
         ).coerceAtLeast(0L)
+
+    // Narrate each cue entry exactly at its start time to prevent missed cues during dialogue overlap
+    val nController = narration()
+    if (nController != null) {
+        val activeEntry = cues.lastOrNull { entry ->
+            positionUs >= entry.startTimeUs && (positionUs - entry.startTimeUs) < 2_500_000L
+        }
+        if (activeEntry != null && activeEntry.startTimeUs != lastNarratedCueStartTimeUs) {
+            lastNarratedCueStartTimeUs = activeEntry.startTimeUs
+            val entryText = activeEntry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+            if (entryText.isNotEmpty()) {
+                val windowSec = when {
+                    activeEntry.durationUs != C.TIME_UNSET && activeEntry.durationUs > 0 -> activeEntry.durationUs / 1_000_000f
+                    activeEntry.endTimeUs != C.TIME_UNSET && activeEntry.endTimeUs > activeEntry.startTimeUs -> (activeEntry.endTimeUs - activeEntry.startTimeUs) / 1_000_000f
+                    else -> null
+                }?.coerceIn(1.0f, 6.0f)
+                nController.onCueText(entryText, windowSec)
+            }
+        }
+    }
+
     val active = collectActiveSidecarCues(cues, positionUs)
     val stripSdh = currentPlayerSettingsForReport.subtitleStyle.stripSdh
     // Sign before sanitising, filtering and merging to skip that work while cues are
@@ -272,28 +296,6 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     val sanitized = active.map { SubtitleMojibakeSanitizer.sanitizeCue(it) }
     val filtered = if (stripSdh) SubtitleSdhFilter.filterCues(sanitized) else sanitized
     val merged = PlayerSubtitleUtils.mergeOverlappingCues(filtered)
-    if (merged.isNotEmpty()) {
-        // Narrate the sidecar line as well; it never reaches ExoPlayer's onCues.
-        val text = merged.joinToString(" ") { it.text.toString() }.trim()
-        if (text.isNotEmpty()) {
-            val activeEntry = cues.firstOrNull { entry ->
-                positionUs >= entry.startTimeUs && positionUs < when {
-                    entry.endTimeUs != C.TIME_UNSET -> entry.endTimeUs
-                    entry.durationUs != C.TIME_UNSET -> entry.startTimeUs + entry.durationUs
-                    else -> Long.MAX_VALUE
-                }
-            }
-            val windowSec = activeEntry?.let { entry ->
-                val duration = when {
-                    entry.durationUs != C.TIME_UNSET && entry.durationUs > 0 -> entry.durationUs
-                    entry.endTimeUs != C.TIME_UNSET && entry.endTimeUs > entry.startTimeUs -> entry.endTimeUs - entry.startTimeUs
-                    else -> 0L
-                }
-                if (duration > 0) (duration / 1_000_000f).coerceIn(1.0f, 6.0f) else null
-            }
-            narration()?.onCueText(text, windowSec)
-        }
-    }
     prefetchUpcomingSidecarCues(cues, positionUs, count = 100)
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return

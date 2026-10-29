@@ -565,6 +565,7 @@ class PlayerRuntimeController(
     internal var sidecarTimedCues: List<androidx.media3.extractor.text.CuesWithTiming> = emptyList()
     internal val subtitlePresentation = SubtitlePresentation()
     internal var lastSidecarCueSignature: Long? = null
+    internal var lastNarratedCueStartTimeUs: Long = -1L
     internal var exoSubtitleViewRef: WeakReference<androidx.media3.ui.SubtitleView>? = null
     /** Cancels previous TEXT-track bounce jobs when subtitle delay is adjusted repeatedly. */
     internal var subtitleTimingRefreshJob: Job? = null

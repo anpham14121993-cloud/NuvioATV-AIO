@@ -74,6 +74,7 @@ class NarrationController(
 
     @Volatile
     private var lastSpokenText: String? = null
+    private var lastSpokenTimeMs: Long = 0L
     private var lastCueAtMs = 0L
     private var cueIntervalEmaMs = 0f
 
@@ -211,12 +212,14 @@ class NarrationController(
         if (!enabled || released) return
         val text = cleanText(rawText) ?: return
         lastCue.value = text
-        if (text == lastSpokenText) return
+        val now = SystemClock.uptimeMillis()
+        if (text == lastSpokenText && (now - lastSpokenTimeMs) < 1500L) return
         if (!shouldNarrateText(text)) return
 
-        val now = SystemClock.uptimeMillis()
         val previousCueAt = lastCueAtMs
         lastCueAtMs = now
+        lastSpokenText = text
+        lastSpokenTimeMs = now
         if (previousCueAt > 0L) {
             val deltaMs = (now - previousCueAt).toFloat()
             if (deltaMs in 400f..15000f) {
@@ -474,11 +477,11 @@ class NarrationController(
         private const val TAG = "NuvioNarration"
         const val FADE_STEPS = 10
         const val FADE_STEP_MS = 30L
-        const val VI_CHARS_PER_SECOND = 14f
+        const val VI_CHARS_PER_SECOND = 18f
         const val MIN_SPEECH_WINDOW_SEC = 1.0f
-        const val BASE_RATE_PERCENT = 20
-        const val MAX_RATE_BUMP_PERCENT = 50
-        const val NEXT_CUE_GUARD_MS = 120L
+        const val BASE_RATE_PERCENT = 35
+        const val MAX_RATE_BUMP_PERCENT = 65
+        const val NEXT_CUE_GUARD_MS = 100L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f
         const val RATE_STEP = 5
 
