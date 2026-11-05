@@ -268,10 +268,23 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     // Narrate each cue entry exactly at its start time to prevent missed cues during dialogue overlap
     val nController = narration()
     if (nController != null) {
-        // Reset tracking if playhead jumped backwards (seek / loop)
-        if (lastNarratedCueStartTimeUs > 0L && positionUs < lastNarratedCueStartTimeUs - 1_500_000L) {
+        // Reset tracking if playhead jumped backwards or sought forward significantly
+        if (lastNarratedCueStartTimeUs > 0L && (positionUs < lastNarratedCueStartTimeUs - 1_500_000L || positionUs > lastNarratedCueStartTimeUs + 10_000_000L)) {
             lastNarratedCueStartTimeUs = -1L
+            nController.clearPrefetchQueue()
         }
+
+        // Hard cut before next cue: strictly cut off speech before the start of the next sentence
+        val nextUpcomingCue = cues.firstOrNull { it.startTimeUs > positionUs }
+        if (nextUpcomingCue != null) {
+            val cutLeadUs = 120_000L // 120ms safety guard before next dialogue
+            if (positionUs in (nextUpcomingCue.startTimeUs - cutLeadUs)..nextUpcomingCue.startTimeUs) {
+                if (nController.isSpeaking) {
+                    nController.stopSpeaking()
+                }
+            }
+        }
+
         val candidate = cues.firstOrNull { entry ->
             entry.startTimeUs > lastNarratedCueStartTimeUs &&
                 positionUs >= entry.startTimeUs &&
@@ -284,11 +297,19 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
                 .joinToString(" ") { it.text?.toString() ?: "" }
                 .trim()
             if (entryText.isNotEmpty()) {
-                val windowSec = when {
-                    candidate.durationUs != C.TIME_UNSET && candidate.durationUs > 0 -> candidate.durationUs / 1_000_000f
-                    candidate.endTimeUs != C.TIME_UNSET && candidate.endTimeUs > candidate.startTimeUs -> (candidate.endTimeUs - candidate.startTimeUs) / 1_000_000f
-                    else -> null
-                }?.coerceIn(1.0f, 6.0f)
+                val nextCue = cues.firstOrNull { it.startTimeUs > candidate.startTimeUs }
+                val naturalDurationUs = when {
+                    candidate.durationUs != C.TIME_UNSET && candidate.durationUs > 0 -> candidate.durationUs
+                    candidate.endTimeUs != C.TIME_UNSET && candidate.endTimeUs > candidate.startTimeUs -> candidate.endTimeUs - candidate.startTimeUs
+                    else -> 2_500_000L
+                }
+                // Allow reading to extend across the silence gap until right before the next cue (120ms safety guard)
+                val windowSec = if (nextCue != null) {
+                    val gapUs = nextCue.startTimeUs - candidate.startTimeUs - 120_000L
+                    (gapUs.coerceAtLeast(naturalDurationUs) / 1_000_000f).coerceIn(1.0f, 7.0f)
+                } else {
+                    (naturalDurationUs / 1_000_000f).coerceIn(1.0f, 7.0f)
+                }
                 nController.onCueText(entryText, windowSec)
             }
         }
@@ -457,11 +478,18 @@ internal fun PlayerRuntimeController.prefetchUpcomingSidecarCues(
     if (cues.isEmpty()) return
     val prefetchHorizonUs = positionUs + 1_200_000_000L // 20 minutes rolling horizon
     var prefetched = 0
+    var lastStartUs = -1L
     for (entry in cues) {
         if (entry.startTimeUs in (positionUs + 50_000L)..prefetchHorizonUs) {
-            val upcomingText = entry.cues.joinToString(" ") { it.text?.toString() ?: "" }.trim()
+            if (entry.startTimeUs == lastStartUs) continue
+            lastStartUs = entry.startTimeUs
+            val sameTimeCues = cues.filter { it.startTimeUs == entry.startTimeUs }
+            val upcomingText = sameTimeCues.flatMap { it.cues }
+                .joinToString(" ") { it.text?.toString() ?: "" }
+                .trim()
             if (upcomingText.isNotEmpty()) {
-                nController.prefetch(upcomingText)
+                val targetRamPcm = (prefetched < 30)
+                nController.prefetch(upcomingText, targetRamPcm = targetRamPcm)
                 prefetched++
                 if (prefetched >= count) break
             }

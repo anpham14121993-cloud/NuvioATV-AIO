@@ -52,6 +52,7 @@ class NarrationController(
 
     private val ttsReady = AtomicBoolean(false)
     private val speaking = AtomicBoolean(false)
+    val isSpeaking: Boolean get() = speaking.get()
     private val utteranceSeq = AtomicInteger(0)
 
     @Volatile
@@ -240,13 +241,13 @@ class NarrationController(
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
 
-    fun prefetch(text: String) {
+    fun prefetch(text: String, targetRamPcm: Boolean = true) {
         if (!enabled || released) return
         val clean = cleanText(text) ?: return
         warmUpEngine()
         val e = engineOrCreate() ?: return
         val rate = chooseRatePercent(clean.length, null)
-        e.prefetch(clean, narrationVoice, rate)
+        e.prefetch(clean, narrationVoice, rate, targetRamPcm)
     }
 
     fun clearPrefetchQueue() {
@@ -355,6 +356,7 @@ class NarrationController(
     }
 
     fun stopSpeaking() {
+        if (!speaking.get() && lastSpokenText == null) return
         runCatching { engine?.stop() }
         runCatching { tts?.stop() }
         lastSpokenText = null

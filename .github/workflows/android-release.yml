@@ -183,6 +183,15 @@ jobs:
         if: inputs.mode != 'dry-run'
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Add extra swap space
+        if: inputs.mode != 'dry-run'
+        run: |
+          sudo fallocate -l 6G /mnt/swapfile_extra || sudo dd if=/dev/zero of=/mnt/swapfile_extra bs=1M count=6144
+          sudo chmod 600 /mnt/swapfile_extra
+          sudo mkswap /mnt/swapfile_extra
+          sudo swapon /mnt/swapfile_extra
+          free -h
+
       - name: Configure release properties
         if: inputs.mode != 'dry-run'
         run: |
@@ -224,7 +233,9 @@ jobs:
 
       - name: Test updater and build full release APKs
         if: inputs.mode != 'dry-run'
-        run: ./gradlew :app:testFullReleaseUnitTest --tests 'com.nuvio.tv.updater.*' :app:assembleFullRelease --stacktrace
+        run: |
+          ./gradlew :app:testFullReleaseUnitTest --tests 'com.nuvio.tv.updater.*' --stacktrace
+          ./gradlew :app:assembleFullRelease --stacktrace
 
       - name: Verify native playback features
         if: inputs.mode != 'dry-run'

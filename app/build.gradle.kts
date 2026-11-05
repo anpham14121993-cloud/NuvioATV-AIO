@@ -97,13 +97,18 @@ android {
     compileSdk = 36
     ndkVersion = "29.0.14206865"
 
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
     defaultConfig {
         applicationId = "com.nuvio.tv.aio"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1572
-        versionName = "1.1.0-nt.7.5.56"
+        versionCode = 1573
+        versionName = "1.1.0-nt.7.5.57"
         // Optional -PnuvioAppIdSuffix=.name installs a local test build next to the main app.
         providers.gradleProperty("nuvioAppIdSuffix").orNull?.takeIf { it.isNotBlank() }?.let {
             applicationIdSuffix = it

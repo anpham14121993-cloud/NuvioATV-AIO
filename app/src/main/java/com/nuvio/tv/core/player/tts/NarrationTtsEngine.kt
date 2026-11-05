@@ -28,7 +28,7 @@ interface NarrationTtsEngine {
     )
 
     /** Pre-synthesizes [text] into the cache; never interrupts playback. */
-    fun prefetch(text: String, voiceApiName: String, ratePercent: Int)
+    fun prefetch(text: String, voiceApiName: String, ratePercent: Int, targetRamPcm: Boolean = true)
 
     /** Stops playback immediately and drops pending requests. */
     fun stop()
