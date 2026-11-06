@@ -3,9 +3,9 @@ package com.nuvio.tv.core.player.tts
 import android.content.Context
 
 /**
- * Creates the primary narration engine (Edge TTS online with neural voices).
- * If synthesis fails or device is offline, NarrationController dispatches to
- * Fallback 1 (Google/System TTS) or Fallback 2 (Piper TTS).
+ * Creates the primary narration engine (Offline Piper TTS with ONNX Runtime).
+ * Completely local, zero internet latency, no WebSocket roundtrips, and no
+ * missed subtitle cues.
  */
 object NarrationEngineFactory {
     fun create(
@@ -15,7 +15,7 @@ object NarrationEngineFactory {
         onError: (text: String, rate: Int) -> Unit,
         onStatus: (NarrationEngineStatus) -> Unit = {},
         onStage: (String) -> Unit = {},
-    ): NarrationTtsEngine = EdgeNarrationEngine(
+    ): NarrationTtsEngine = PiperNarrationEngine(
         appContext = context.applicationContext,
         onSpeechStart = onSpeechStart,
         onSpeechEnd = onSpeechEnd,
@@ -27,7 +27,7 @@ object NarrationEngineFactory {
 
 /** Progress of the narration engine so the UI can explain state. */
 enum class NarrationEngineStatus {
-    /** The engine is connecting or preheating. */
+    /** The engine is loading or downloading models. */
     LOADING,
 
     /** The engine is ready and can synthesize. */

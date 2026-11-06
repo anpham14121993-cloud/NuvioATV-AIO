@@ -3,6 +3,7 @@ package com.nuvio.tv.ui.screens.settings
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
+import com.nuvio.tv.core.player.tts.piper.PiperVoiceCatalog
 import com.nuvio.tv.data.local.NarrationSubtitleMode
 import com.nuvio.tv.data.local.PlayerSettings
 
@@ -47,13 +48,14 @@ internal fun PlaybackNarrationSection(
             onValueChange = { value -> onUpdate { setTtsDuckVolume(value) } }
         )
 
-        val voices = listOf("Hoài My", "Nam Minh")
+        val voices = PiperVoiceCatalog.VOICES.map { it.displayName }
         SettingsActionRow(
             title = stringResource(R.string.playback_narration_voice),
             subtitle = null,
             value = settings.ttsNarrationVoice,
             onClick = {
-                val next = voices[(voices.indexOf(settings.ttsNarrationVoice) + 1) % voices.size]
+                val currentIndex = voices.indexOf(settings.ttsNarrationVoice).takeIf { it >= 0 } ?: 0
+                val next = voices[(currentIndex + 1) % voices.size]
                 onUpdate { setTtsNarrationVoice(next) }
             }
         )
