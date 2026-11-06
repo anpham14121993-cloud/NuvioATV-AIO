@@ -116,14 +116,25 @@ class PiperNarrationEngine(
     @Volatile
     private var released = false
 
-    private val env: OrtEnvironment by lazy {
-        OrtEnvironment.getEnvironment()
+    private val env: OrtEnvironment? by lazy {
+        try {
+            OrtEnvironment.getEnvironment()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to initialize OrtEnvironment: ${t.message}", t)
+            NarrationDiag.log(appContext, "piper: env init failed ${t.javaClass.simpleName}")
+            null
+        }
     }
 
     override fun warmUp() {
         if (released) return
         worker.execute {
-            ensureModelLoaded(PiperVoiceCatalog.DEFAULT_VOICE.id)
+            runCatching {
+                ensureModelLoaded(PiperVoiceCatalog.DEFAULT_VOICE.id)
+            }.onFailure { t ->
+                Log.e(TAG, "warmUp failed: ${t.message}", t)
+                NarrationDiag.log(appContext, "piper: warmup error ${t.javaClass.simpleName}")
+            }
         }
     }
 
@@ -322,6 +333,7 @@ class PiperNarrationEngine(
 
         return synchronized(sessionLock) {
             val curSession = ortSession ?: return@synchronized null
+            val curEnv = env ?: return@synchronized null
             var inputTensor: OnnxTensor? = null
             var lengthsTensor: OnnxTensor? = null
             var scalesTensor: OnnxTensor? = null
@@ -330,17 +342,17 @@ class PiperNarrationEngine(
 
             try {
                 inputTensor = OnnxTensor.createTensor(
-                    env,
+                    curEnv,
                     LongBuffer.wrap(ids),
                     longArrayOf(1, ids.size.toLong())
                 )
                 lengthsTensor = OnnxTensor.createTensor(
-                    env,
+                    curEnv,
                     LongBuffer.wrap(longArrayOf(ids.size.toLong())),
                     longArrayOf(1)
                 )
                 scalesTensor = OnnxTensor.createTensor(
-                    env,
+                    curEnv,
                     FloatBuffer.wrap(floatArrayOf(config.noiseScale, config.lengthScale / speedMultiplier, config.noiseW)),
                     longArrayOf(3)
                 )
@@ -353,7 +365,7 @@ class PiperNarrationEngine(
 
                 if (config.numSpeakers > 1) {
                     sidTensor = OnnxTensor.createTensor(
-                        env,
+                        curEnv,
                         LongBuffer.wrap(longArrayOf(0)),
                         longArrayOf(1)
                     )
@@ -535,16 +547,31 @@ class PiperNarrationEngine(
         }
     }
 
+    private val httpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
     private fun ensureModelLoaded(voiceId: String): Pair<OrtSession, PiperVoiceConfig>? {
         synchronized(sessionLock) {
             if (ortSession != null && voiceConfig != null && currentVoiceId == voiceId) {
                 return Pair(ortSession!!, voiceConfig!!)
             }
 
+            val ortEnv = env ?: run {
+                NarrationDiag.log(appContext, "piper: env is null")
+                onStatus(NarrationEngineStatus.FAILED)
+                return null
+            }
+
             val modelFile = File(modelsDir, "$voiceId.onnx")
             val configFile = File(modelsDir, "$voiceId.onnx.json")
 
-            if (!modelFile.exists() || !configFile.exists() || modelFile.length() < 1024L) {
+            if (!modelFile.exists() || !configFile.exists() || modelFile.length() < 10_000_000L || configFile.length() < 100L) {
                 if (!downloadVoiceModel(voiceId, modelFile, configFile)) {
                     return null
                 }
@@ -557,11 +584,14 @@ class PiperNarrationEngine(
                 val config = PiperVoiceConfig.fromFile(configFile)
                 val sessionOptions = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(2)
-                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
+                    setInterOpNumThreads(1)
+                    setMemoryPatternOptimization(false)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT)
+                    addConfigEntry("session.disable_prepacking", "1")
                 }
 
                 ortSession?.close()
-                val session = env.createSession(modelFile.absolutePath, sessionOptions)
+                val session = ortEnv.createSession(modelFile.absolutePath, sessionOptions)
 
                 ortSession = session
                 voiceConfig = config
@@ -581,13 +611,13 @@ class PiperNarrationEngine(
 
     private fun downloadVoiceModel(voiceId: String, modelFile: File, configFile: File): Boolean {
         if (!isDownloading.compareAndSet(false, true)) {
-            // Already downloading, wait up to 45 seconds
-            for (i in 0 until 90) {
+            // Already downloading, wait up to 60 seconds
+            for (i in 0 until 120) {
                 Thread.sleep(500)
-                if (modelFile.exists() && configFile.exists()) return true
+                if (modelFile.exists() && modelFile.length() >= 10_000_000L && configFile.exists() && configFile.length() >= 100L) return true
                 if (!isDownloading.get()) break
             }
-            return modelFile.exists() && configFile.exists()
+            return modelFile.exists() && modelFile.length() >= 10_000_000L && configFile.exists() && configFile.length() >= 100L
         }
 
         try {
@@ -602,7 +632,7 @@ class PiperNarrationEngine(
             downloadHttp(modelUrl, modelFile)
 
             NarrationDiag.log(appContext, "piper: downloaded $voiceId (${modelFile.length()} bytes)")
-            return true
+            return modelFile.exists() && modelFile.length() >= 10_000_000L && configFile.exists() && configFile.length() >= 100L
         } catch (t: Throwable) {
             Log.e(TAG, "Download failed for voice $voiceId: ${t.message}", t)
             NarrationDiag.log(appContext, "piper: download failed ${t.javaClass.simpleName}")
@@ -616,19 +646,31 @@ class PiperNarrationEngine(
 
     private fun downloadHttp(urlStr: String, dest: File) {
         val tmp = File(dest.parentFile, "${dest.name}.tmp")
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15000
-            readTimeout = 60000
-            instanceFollowRedirects = true
-        }
-        conn.inputStream.use { input ->
-            FileOutputStream(tmp).use { output ->
-                input.copyTo(output)
+        val req = okhttp3.Request.Builder()
+            .url(urlStr)
+            .header("User-Agent", "NuvioATV/1.1.0")
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw java.io.IOException("HTTP ${resp.code}: ${resp.message}")
+            }
+            val body = resp.body ?: throw java.io.IOException("Empty response body from $urlStr")
+            body.byteStream().use { input ->
+                FileOutputStream(tmp).use { output ->
+                    input.copyTo(output)
+                }
             }
         }
         if (tmp.length() > 0) {
             dest.delete()
-            tmp.renameTo(dest)
+            if (!tmp.renameTo(dest)) {
+                FileInputStream(tmp).use { input ->
+                    FileOutputStream(dest).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                tmp.delete()
+            }
         } else {
             tmp.delete()
             throw java.io.IOException("Empty download from $urlStr")

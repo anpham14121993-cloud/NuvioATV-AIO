@@ -163,3 +163,19 @@
 
 -dontwarn java.beans.ConstructorProperties
 -dontwarn java.beans.Transient
+# ── ONNX Runtime & Piper TTS ──────────────────────────────────────────────────
+# ONNX Runtime: libonnxruntime4j_jni.so looks up ai.onnxruntime classes and
+# members by their original names. The AAR only keeps part of the public API,
+# so R8 renamed internals (e.g. ai.onnxruntime.a) in the release APK and the
+# native side aborted the process with SIGABRT a second into createSession.
+-keep class ai.onnxruntime.** { *; }
+-keep interface ai.onnxruntime.** { *; }
+-keep enum ai.onnxruntime.** { *; }
+-keepclassmembers class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
+
+# Keep Piper TTS and narration engine classes
+-keep class com.nuvio.tv.core.player.tts.** { *; }
+-keepclassmembers class com.nuvio.tv.core.player.tts.** { *; }
+-keep class com.nuvio.tv.core.player.tts.piper.** { *; }
+-keepclassmembers class com.nuvio.tv.core.player.tts.piper.** { *; }
