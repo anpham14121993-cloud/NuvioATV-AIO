@@ -111,7 +111,7 @@ class PiperNarrationEngine(
         }
     }
 
-    override fun prefetch(text: String, voiceApiName: String, ratePercent: Int, targetRamPcm: Boolean) {
+    override fun prefetch(text: String, voiceApiName: String, ratePercent: Int, targetRam: Boolean) {
         if (!modelFile.exists() && !isDownloading) {
             downloadModelInBackground()
         }

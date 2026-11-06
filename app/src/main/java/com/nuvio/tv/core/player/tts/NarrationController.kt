@@ -241,13 +241,13 @@ class NarrationController(
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
 
-    fun prefetch(text: String, targetRamPcm: Boolean = true) {
+    fun prefetch(text: String, targetRam: Boolean = true) {
         if (!enabled || released) return
         val clean = cleanText(text) ?: return
         warmUpEngine()
         val e = engineOrCreate() ?: return
         val rate = chooseRatePercent(clean.length, null)
-        e.prefetch(clean, narrationVoice, rate, targetRamPcm)
+        e.prefetch(clean, narrationVoice, rate, targetRam)
     }
 
     fun clearPrefetchQueue() {
@@ -483,10 +483,10 @@ class NarrationController(
         private const val TAG = "NuvioNarration"
         const val FADE_STEPS = 10
         const val FADE_STEP_MS = 30L
-        const val VI_CHARS_PER_SECOND = 18f
+        const val VI_CHARS_PER_SECOND = 20f
         const val MIN_SPEECH_WINDOW_SEC = 1.0f
-        const val BASE_RATE_PERCENT = 40
-        const val MAX_RATE_BUMP_PERCENT = 70
+        const val BASE_RATE_PERCENT = 50
+        const val MAX_RATE_BUMP_PERCENT = 80
         const val NEXT_CUE_GUARD_MS = 100L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f
         const val RATE_STEP = 5
