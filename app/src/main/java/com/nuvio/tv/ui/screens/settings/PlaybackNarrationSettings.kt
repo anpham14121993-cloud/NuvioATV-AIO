@@ -1,6 +1,10 @@
 package com.nuvio.tv.ui.screens.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
 import com.nuvio.tv.core.player.tts.piper.PiperVoiceCatalog
@@ -16,6 +20,8 @@ internal fun PlaybackNarrationSection(
     settings: PlayerSettings,
     onUpdate: PlaybackSettingsUpdate
 ) {
+    var showVoiceDialog by remember { mutableStateOf(false) }
+
     SettingsNote(text = stringResource(R.string.playback_narration_info))
 
     SettingsToggleRow(
@@ -48,17 +54,23 @@ internal fun PlaybackNarrationSection(
             onValueChange = { value -> onUpdate { setTtsDuckVolume(value) } }
         )
 
-        val voices = PiperVoiceCatalog.VOICES.map { it.displayName }
+        val activeVoice = PiperVoiceCatalog.findVoice(settings.ttsNarrationVoice)
         SettingsActionRow(
             title = stringResource(R.string.playback_narration_voice),
-            subtitle = null,
-            value = settings.ttsNarrationVoice,
-            onClick = {
-                val currentIndex = voices.indexOf(settings.ttsNarrationVoice).takeIf { it >= 0 } ?: 0
-                val next = voices[(currentIndex + 1) % voices.size]
-                onUpdate { setTtsNarrationVoice(next) }
-            }
+            subtitle = activeVoice.description.takeIf { it.isNotBlank() },
+            value = activeVoice.displayName,
+            onClick = { showVoiceDialog = true }
         )
+
+        if (showVoiceDialog) {
+            PiperVoiceSelectionDialog(
+                currentVoice = settings.ttsNarrationVoice,
+                onVoiceSelected = { voiceName ->
+                    onUpdate { setTtsNarrationVoice(voiceName) }
+                },
+                onDismiss = { showVoiceDialog = false }
+            )
+        }
 
         SettingsActionRow(
             title = stringResource(R.string.playback_narration_subtitle_mode),

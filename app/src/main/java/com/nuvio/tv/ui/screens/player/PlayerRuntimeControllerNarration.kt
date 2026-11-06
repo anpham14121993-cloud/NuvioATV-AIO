@@ -21,6 +21,7 @@ internal fun PlayerRuntimeController.applyNarrationSettings(settings: com.nuvio.
         it.copy(
             narrationEnabled = settings.ttsNarrationEnabled,
             narrationSubtitleMode = settings.ttsNarrationSubtitleMode,
+            narrationVoice = settings.ttsNarrationVoice,
         )
     }
     applyNarrationSubtitleVisibility(settings.ttsNarrationEnabled, settings.ttsNarrationSubtitleMode)
@@ -90,6 +91,19 @@ internal fun PlayerRuntimeController.disableNarration() {
     narration()?.setEnabled(false)
     _uiState.update { it.copy(narrationEnabled = false) }
     applyNarrationSubtitleVisibility(false, NarrationSubtitleMode.SHOW)
+}
+
+/** Updates the narration voice and saves to settings. */
+internal fun PlayerRuntimeController.setNarrationVoice(voice: String) {
+    Log.i(PlayerRuntimeController.TAG, "setNarrationVoice: voice=$voice")
+    val controller = narration()
+    if (controller != null) {
+        controller.narrationVoice = voice
+    }
+    _uiState.update { it.copy(narrationVoice = voice) }
+    scope.launch {
+        playerSettingsDataStore.setTtsNarrationVoice(voice)
+    }
 }
 
 /**

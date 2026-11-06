@@ -4117,4 +4117,15 @@
     <string name="playback_narration_duck_sub">Phim bị hạ nhỏ tới mức nào khi đang thuyết minh.</string>
     <string name="playback_narration_voice">Giọng thuyết minh</string>
     <string name="playback_narration_subtitle_mode">Phụ đề khi thuyết minh</string>
+    <string name="piper_voice_dialog_title">Giọng đọc thuyết minh</string>
+    <string name="piper_voice_dialog_subtitle">Nghe thử, tải về và chọn giọng thuyết minh ngoại tuyến (Piper TTS)</string>
+    <string name="piper_voice_preview">Nghe thử</string>
+    <string name="piper_voice_stop">Dừng</string>
+    <string name="piper_voice_download">Tải về</string>
+    <string name="piper_voice_downloading">Đang tải %1$d%%</string>
+    <string name="piper_voice_downloaded">Đã tải (~%1$d MB)</string>
+    <string name="piper_voice_not_downloaded">Chưa tải (~60 MB)</string>
+    <string name="piper_voice_selected">Đang chọn</string>
+    <string name="piper_voice_delete">Xóa giọng</string>
+    <string name="piper_voice_delete_confirm">Đã xóa giọng %1$s để giải phóng bộ nhớ.</string>
 </resources>

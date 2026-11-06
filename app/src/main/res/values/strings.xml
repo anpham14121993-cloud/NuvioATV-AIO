@@ -4154,4 +4154,15 @@
     <string name="playback_narration_duck_sub">How much the movie is lowered while the narration is playing.</string>
     <string name="playback_narration_voice">Narration voice</string>
     <string name="playback_narration_subtitle_mode">Subtitles while narrating</string>
+    <string name="piper_voice_dialog_title">Narration Voice</string>
+    <string name="piper_voice_dialog_subtitle">Preview, download and select offline narration voice (Piper TTS)</string>
+    <string name="piper_voice_preview">Preview</string>
+    <string name="piper_voice_stop">Stop</string>
+    <string name="piper_voice_download">Download</string>
+    <string name="piper_voice_downloading">Downloading %1$d%%</string>
+    <string name="piper_voice_downloaded">Downloaded (~%1$d MB)</string>
+    <string name="piper_voice_not_downloaded">Not downloaded (~60 MB)</string>
+    <string name="piper_voice_selected">Active</string>
+    <string name="piper_voice_delete">Delete voice</string>
+    <string name="piper_voice_delete_confirm">Deleted voice %1$s to free storage.</string>
 </resources>

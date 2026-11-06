@@ -2459,11 +2459,13 @@ fun PlayerScreen(
                 PlayerNarrationDialog(
                     narrationEnabled = uiState.narrationEnabled,
                     subtitleMode = uiState.narrationSubtitleMode,
+                    currentVoice = uiState.narrationVoice,
                     engineStatus = uiState.narrationEngineStatus,
                     lastCue = uiState.narrationLastCue,
                     lastError = uiState.narrationLastError,
                     onEnable = { mode -> viewModel.onEvent(PlayerEvent.OnEnableNarration(mode)) },
                     onDisable = { viewModel.onEvent(PlayerEvent.OnDisableNarration) },
+                    onSelectVoice = { voice -> viewModel.onEvent(PlayerEvent.OnSetNarrationVoice(voice)) },
                     onDismiss = { viewModel.onEvent(PlayerEvent.OnDismissNarrationDialog) }
                 )
             }

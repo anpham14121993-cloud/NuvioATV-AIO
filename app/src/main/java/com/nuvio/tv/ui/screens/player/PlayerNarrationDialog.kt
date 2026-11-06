@@ -17,8 +17,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
@@ -35,8 +37,10 @@ import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.core.player.tts.NarrationDiag
 import com.nuvio.tv.core.player.tts.NarrationEngineStatus
+import com.nuvio.tv.core.player.tts.piper.PiperVoiceCatalog
 import com.nuvio.tv.data.local.NarrationSubtitleMode
 import com.nuvio.tv.ui.components.PlayerPanelRow
+import com.nuvio.tv.ui.screens.settings.PiperVoiceSelectionDialog
 import com.nuvio.tv.ui.theme.NuvioTheme
 import com.nuvio.tv.ui.v2.appearance.LocalV2Appearance
 import com.nuvio.tv.ui.v2.components.NuvioSideSheet
@@ -49,14 +53,28 @@ import com.nuvio.tv.ui.v2.components.NuvioSideSheet
 internal fun PlayerNarrationDialog(
     narrationEnabled: Boolean,
     subtitleMode: String,
+    currentVoice: String = "Ban Mai",
     engineStatus: NarrationEngineStatus = NarrationEngineStatus.LOADING,
     lastCue: String? = null,
     lastError: String? = null,
     onEnable: (String) -> Unit,
     onDisable: () -> Unit,
+    onSelectVoice: (String) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
+    var showVoiceSelection by remember { mutableStateOf(false) }
     val v2 = LocalV2Appearance.current != null
+
+    if (showVoiceSelection) {
+        PiperVoiceSelectionDialog(
+            currentVoice = currentVoice,
+            onVoiceSelected = {
+                onSelectVoice(it)
+                showVoiceSelection = false
+            },
+            onDismiss = { showVoiceSelection = false }
+        )
+    }
     val options = listOf(
         NarrationSubtitleMode.SHOW to R.string.player_narration_show_subtitles,
         NarrationSubtitleMode.HIDE to R.string.player_narration_hide_subtitles,
@@ -135,6 +153,15 @@ internal fun PlayerNarrationDialog(
                         onClick = { onEnable(mode) },
                     )
                 }
+                item {
+                    val activeVoice = PiperVoiceCatalog.findVoice(currentVoice)
+                    PlayerPanelRow(
+                        title = stringResource(R.string.playback_narration_voice),
+                        subtitle = "${activeVoice.displayName} (${activeVoice.description})",
+                        selected = false,
+                        onClick = { showVoiceSelection = true },
+                    )
+                }
             }
         }
         return
@@ -202,6 +229,15 @@ internal fun PlayerNarrationDialog(
                             subtitle = stringResource(subtitles.getValue(mode)),
                             selected = narrationEnabled && subtitleMode == mode,
                             onClick = { onEnable(mode) },
+                        )
+                    }
+                    item {
+                        val activeVoice = PiperVoiceCatalog.findVoice(currentVoice)
+                        PlayerPanelRow(
+                            title = stringResource(R.string.playback_narration_voice),
+                            subtitle = "${activeVoice.displayName} (${activeVoice.description})",
+                            selected = false,
+                            onClick = { showVoiceSelection = true },
                         )
                     }
                 }

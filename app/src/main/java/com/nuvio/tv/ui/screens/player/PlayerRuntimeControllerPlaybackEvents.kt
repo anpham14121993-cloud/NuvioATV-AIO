@@ -1780,6 +1780,9 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         PlayerEvent.OnDisableNarration -> {
             disableNarration()
         }
+        is PlayerEvent.OnSetNarrationVoice -> {
+            setNarrationVoice(event.voice)
+        }
         PlayerEvent.OnShowMoreDialog -> {
             _uiState.update {
                 it.copy(

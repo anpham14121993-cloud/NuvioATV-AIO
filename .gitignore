@@ -48,6 +48,7 @@ scripts/*
 !scripts/release-metadata.sh
 !scripts/release_beta.py
 !scripts/verify_native_apk.py
+!scripts/generate_voice_samples.py
 !scripts/tests/
 !scripts/tests/*.py
 /supabase

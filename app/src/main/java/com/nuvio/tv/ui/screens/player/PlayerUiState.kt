@@ -131,6 +131,7 @@ data class PlayerUiState(
     // Offline Vietnamese narration (VieNeu TTS).
     val narrationEnabled: Boolean = false,
     val narrationSubtitleMode: String = com.nuvio.tv.data.local.NarrationSubtitleMode.SHOW,
+    val narrationVoice: String = "Ban Mai",
     val showNarrationDialog: Boolean = false,
     val narrationEngineStatus: com.nuvio.tv.core.player.tts.NarrationEngineStatus =
         com.nuvio.tv.core.player.tts.NarrationEngineStatus.LOADING,
@@ -365,6 +366,7 @@ sealed class PlayerEvent {
     data object OnDismissNarrationDialog : PlayerEvent()
     data class OnEnableNarration(val subtitleMode: String) : PlayerEvent()
     data object OnDisableNarration : PlayerEvent()
+    data class OnSetNarrationVoice(val voice: String) : PlayerEvent()
 
     data object OnShowMoreDialog : PlayerEvent()
     data object OnDismissMoreDialog : PlayerEvent()
