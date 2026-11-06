@@ -814,6 +814,7 @@ class PlayerRuntimeController(
     internal val mpvErrorHandlingInProgress = AtomicBoolean(false)
     internal var delayMpvResumeSeekUntilVideoTrack: Boolean = false
     internal var mpvDelayStartAfterAfrSwitch: Boolean = false
+    internal var lastMpvSubText: String? = null
     // Exo counterpart of the MPV settle hold: set when the AFR preflight
     // actually changed the display mode, consumed by initializePlayer to hold
     // playback start briefly so the (tunneled) pipeline does not begin inside

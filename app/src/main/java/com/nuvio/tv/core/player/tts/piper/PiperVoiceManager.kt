@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.res.AssetFileDescriptor
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -150,9 +152,12 @@ object PiperVoiceManager {
         }
     }
 
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
     /**
      * Plays a voice sample preview.
-     * Looks first in asset directory "voice_samples/{voiceId}.wav".
+     * Looks first in asset directory "voice_samples/{voiceId}.wav",
+     * caching it to a disk file so MediaPlayer can decode it without offset/header issues.
      */
     fun playVoicePreview(
         context: Context,
@@ -164,36 +169,51 @@ object PiperVoiceManager {
 
         synchronized(previewLock) {
             try {
-                val afd = runCatching { context.assets.openFd("voice_samples/$voiceId.wav") }.getOrNull()
+                val previewDir = File(context.cacheDir, "piper_previews").apply { mkdirs() }
+                val previewFile = File(previewDir, "sample_$voiceId.wav")
 
-                if (afd != null) {
-                    activeAfd = afd
+                if (!previewFile.exists() || previewFile.length() < 1000L) {
+                    val assetStream = runCatching { context.assets.open("voice_samples/$voiceId.wav") }.getOrNull()
+                    if (assetStream != null) {
+                        assetStream.use { input ->
+                            FileOutputStream(previewFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                }
+
+                if (previewFile.exists() && previewFile.length() > 44L) {
                     val player = MediaPlayer().apply {
                         setAudioAttributes(
                             AudioAttributes.Builder()
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
                                 .build()
                         )
-                        setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                        setDataSource(previewFile.absolutePath)
+                        setVolume(1.0f, 1.0f)
                         setOnCompletionListener {
                             stopVoicePreview()
-                            onPlaybackEnded()
+                            mainHandler.post { onPlaybackEnded() }
                         }
-                        setOnErrorListener { _, _, _ ->
+                        setOnErrorListener { _, what, extra ->
+                            Log.w(TAG, "Preview MediaPlayer error for $voiceId: what=$what extra=$extra")
                             stopVoicePreview()
-                            onPlaybackEnded()
+                            mainHandler.post { onPlaybackEnded() }
                             true
                         }
                         prepare()
                         start()
                     }
                     activePreviewPlayer = player
-                    onPlaybackStarted()
+                    mainHandler.post { onPlaybackStarted() }
                     return true
+                } else {
+                    Log.w(TAG, "Preview sample not found for $voiceId in assets")
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "Could not play asset preview for $voiceId: ${t.message}")
+                Log.w(TAG, "Could not play asset preview for $voiceId: ${t.message}", t)
                 stopVoicePreview()
             }
 

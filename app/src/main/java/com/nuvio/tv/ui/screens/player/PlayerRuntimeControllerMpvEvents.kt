@@ -102,14 +102,29 @@ internal class MpvEventRelay(
     }
 
     override fun eventProperty(property: String) {
-        if (property != MPV_TRACK_LIST_PROPERTY) return
-        if (!active.get() || epoch != controller.mpvEventRelayEpoch) return
-        controller.markMpvTracksStale()
+        if (property == MPV_TRACK_LIST_PROPERTY) {
+            if (!active.get() || epoch != controller.mpvEventRelayEpoch) return
+            controller.markMpvTracksStale()
+        } else if (property == "sub-text") {
+            if (!active.get() || epoch != controller.mpvEventRelayEpoch) return
+            val text = controller.mpvView?.currentSubtitleText()?.trim()
+            if (!text.isNullOrEmpty()) {
+                controller.narration()?.onCueText(text)
+            }
+        }
     }
 
     override fun eventProperty(property: String, value: Long) = Unit
     override fun eventProperty(property: String, value: Boolean) = Unit
-    override fun eventProperty(property: String, value: String) = Unit
+    override fun eventProperty(property: String, value: String) {
+        if (property == "sub-text") {
+            if (!active.get() || epoch != controller.mpvEventRelayEpoch) return
+            val text = value.trim()
+            if (text.isNotEmpty()) {
+                controller.narration()?.onCueText(text)
+            }
+        }
+    }
     override fun eventProperty(property: String, value: Double) = Unit
     override fun eventProperty(property: String, value: MPVNode) = Unit
 }
@@ -122,6 +137,7 @@ internal fun PlayerRuntimeController.registerMpvEventRelay(view: NuvioMpvSurface
     mpvLastErrorLogLine = null
     mpvLastHttpErrorAtMs = 0L
     mpvLastFileError = null
+    lastMpvSubText = null
     resetMpvStartupWatchdog()
     // Changes that happened before the relay was attached are not replayed.
     markMpvTracksStale()
@@ -129,6 +145,7 @@ internal fun PlayerRuntimeController.registerMpvEventRelay(view: NuvioMpvSurface
     mpvEventRelay = relay
     runCatching { view.mpv.addObserver(relay) }
     runCatching { view.mpv.addLogObserver(relay) }
+    runCatching { view.mpv.observeProperty("sub-text", MPV.mpvFormat.MPV_FORMAT_STRING) }
 }
 
 internal fun PlayerRuntimeController.unregisterMpvEventRelay() {

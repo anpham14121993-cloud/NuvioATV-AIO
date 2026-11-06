@@ -99,6 +99,8 @@ class PiperNarrationEngine(
 
     @Volatile
     private var activePlayer: MediaPlayer? = null
+    @Volatile
+    private var activeTempFile: File? = null
     private val playerLock = Any()
 
     private val isSpeaking = AtomicBoolean(false)
@@ -208,16 +210,21 @@ class PiperNarrationEngine(
 
             if (isOriginator) {
                 try {
+                    val t0 = System.currentTimeMillis()
                     val bytes = doSynthesize(clean, voice.id, ratePercent)
+                    val took = System.currentTimeMillis() - t0
                     if (bytes != null && bytes.size > 44) {
                         job.audioBytes = bytes
                         synchronized(ramLock) { ramCache[cacheKey] = bytes }
                         saveToDiskCache(diskFile, bytes)
+                        NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length})")
                     } else {
                         job.failed = true
+                        NarrationDiag.log(appContext, "piper: synth null/empty in ${took}ms (len=${clean.length})")
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Piper synthesis error: ${t.message}", t)
+                    NarrationDiag.log(appContext, "piper: synth err ${t.javaClass.simpleName}: ${t.message}")
                     job.failed = true
                 } finally {
                     job.latch.countDown()
@@ -468,18 +475,17 @@ class PiperNarrationEngine(
                     setAudioAttributes(
                         AudioAttributes.Builder()
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
                             .build()
                     )
-                    FileInputStream(tempFile).use { fis ->
-                        setDataSource(fis.fd)
-                    }
+                    setDataSource(tempFile.absolutePath)
                     setVolume(narrationVolume, narrationVolume)
                     setOnCompletionListener { mp ->
                         playbackWorker.execute {
                             synchronized(playerLock) {
                                 if (activePlayer == mp) {
                                     activePlayer = null
+                                    activeTempFile = null
                                     if (isSpeaking.getAndSet(false)) {
                                         mainHandler.post { onSpeechEnd() }
                                     }
@@ -487,14 +493,17 @@ class PiperNarrationEngine(
                             }
                             runCatching { mp.release() }
                             runCatching { tempFile.delete() }
+                            NarrationDiag.log(appContext, "piper: play completed seq=$seq")
                         }
                     }
                     setOnErrorListener { mp, what, extra ->
                         Log.w(TAG, "MediaPlayer error: what=$what extra=$extra")
+                        NarrationDiag.log(appContext, "piper: player err what=$what extra=$extra seq=$seq")
                         playbackWorker.execute {
                             synchronized(playerLock) {
                                 if (activePlayer == mp) {
                                     activePlayer = null
+                                    activeTempFile = null
                                     if (isSpeaking.getAndSet(false)) {
                                         mainHandler.post { onSpeechEnd() }
                                     }
@@ -516,15 +525,18 @@ class PiperNarrationEngine(
                         return@execute
                     }
                     activePlayer = player
+                    activeTempFile = tempFile
                     player.start()
                 }
 
+                NarrationDiag.log(appContext, "piper: play seq=$seq len=${wavBytes.size}B vol=$narrationVolume")
                 if (!isSpeaking.getAndSet(true)) {
                     mainHandler.post { onSpeechStart() }
                 }
                 onResult?.invoke(true, "playing")
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to start MediaPlayer: ${t.message}", t)
+                NarrationDiag.log(appContext, "piper: play failed ${t.javaClass.simpleName}: ${t.message}")
                 stopPlayerInternal()
                 onResult?.invoke(false, "playback_failed")
             }
@@ -533,14 +545,17 @@ class PiperNarrationEngine(
 
     private fun stopPlayerInternal() {
         synchronized(playerLock) {
-            val player = activePlayer ?: return
+            val player = activePlayer
+            val file = activeTempFile
             activePlayer = null
+            activeTempFile = null
             runCatching {
-                if (player.isPlaying) {
+                if (player != null && player.isPlaying) {
                     player.stop()
                 }
-                player.release()
+                player?.release()
             }
+            runCatching { file?.delete() }
             if (isSpeaking.getAndSet(false)) {
                 mainHandler.post { onSpeechEnd() }
             }

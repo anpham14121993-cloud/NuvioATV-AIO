@@ -293,6 +293,14 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                         )
                     }
                     updateMpvTracksOnTick()
+                    // Forward MPV subtitle cues to narration engine if active
+                    val subText = view.currentSubtitleText()?.trim()
+                    if (!subText.isNullOrEmpty() && subText != lastMpvSubText) {
+                        lastMpvSubText = subText
+                        narration()?.onCueText(subText)
+                    } else if (subText.isNullOrEmpty()) {
+                        lastMpvSubText = null
+                    }
                     updateActiveSkipInterval(pos)
                     if (!_playbackTimeline.value.isLive) {
                         evaluatePostPlayOverlayVisibility(

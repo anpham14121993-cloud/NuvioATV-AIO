@@ -224,6 +224,11 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         return mpv.getPropertyBoolean("eof-reached") == true
     }
 
+    fun currentSubtitleText(): String? {
+        if (!initialized) return null
+        return runCatching { mpv.getPropertyString("sub-text") }.getOrNull()
+    }
+
     fun seekToMs(positionMs: Long) {
         if (!initialized) return
         val seconds = (positionMs.coerceAtLeast(0L) / 1000.0)
@@ -719,6 +724,7 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         // Progress is polled by PlayerRuntimeController. Track-list changes are pushed so
         // the poll can skip re-reading an unchanged track list.
         mpv.observeProperty(MPV_TRACK_LIST_PROPERTY, MPV.mpvFormat.MPV_FORMAT_NONE)
+        runCatching { mpv.observeProperty("sub-text", MPV.mpvFormat.MPV_FORMAT_STRING) }
     }
 
     private fun applyHeaders(headers: Map<String, String>) {
