@@ -2085,6 +2085,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                             tryShowParentalGuide()
                             emitScrobbleStart()
                         } else {
+                            narration()?.stopSpeaking()
                             if (userPausedManually) schedulePauseOverlay() else cancelPauseOverlay()
                             // A held scrub is not a user pause: no scrobble, no progress save.
                             if (scrubHoldPaused && playbackState == Player.STATE_READY) {

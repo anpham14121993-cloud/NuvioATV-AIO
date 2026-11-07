@@ -231,12 +231,12 @@ class NarrationController(
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
 
-    fun prefetch(text: String, targetRam: Boolean = true) {
+    fun prefetch(text: String, windowSec: Float? = null, targetRam: Boolean = true) {
         if (!enabled || released) return
         val clean = cleanText(text) ?: return
         warmUpEngine()
         val e = engineOrCreate() ?: return
-        val rate = chooseRatePercent(clean.length, null)
+        val rate = chooseRatePercent(clean.length, windowSec)
         e.prefetch(clean, narrationVoice, rate, targetRam)
     }
 
@@ -298,10 +298,10 @@ class NarrationController(
     private fun chooseRatePercent(charCount: Int, windowSec: Float?): Int {
         // 1. Length-based speed bump: long dialogue sentences naturally read faster
         val lengthBump = when {
-            charCount >= 100 -> 50
-            charCount >= 70 -> 35
-            charCount >= 45 -> 20
-            charCount >= 25 -> 10
+            charCount >= 100 -> 60
+            charCount >= 70 -> 45
+            charCount >= 45 -> 30
+            charCount >= 25 -> 15
             else -> 0
         }
 
@@ -477,9 +477,9 @@ class NarrationController(
         private const val TAG = "NuvioNarration"
         const val FADE_STEPS = 10
         const val FADE_STEP_MS = 30L
-        const val VI_CHARS_PER_SECOND = 24f
+        const val VI_CHARS_PER_SECOND = 25f
         const val MIN_SPEECH_WINDOW_SEC = 1.0f
-        const val BASE_RATE_PERCENT = 65
+        const val BASE_RATE_PERCENT = 70
         const val MAX_RATE_BUMP_PERCENT = 140
         const val NEXT_CUE_GUARD_MS = 100L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f

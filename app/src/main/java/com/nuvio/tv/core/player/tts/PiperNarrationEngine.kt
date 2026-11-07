@@ -52,7 +52,7 @@ class PiperNarrationEngine(
     companion object {
         private const val TAG = "PiperNarration"
         private const val MAX_DISK_CACHE_BYTES = 128L * 1024L * 1024L // 128 MB
-        private const val MAX_RAM_CACHE_ENTRIES = 30
+        private const val MAX_RAM_CACHE_ENTRIES = 60
     }
 
     private class InFlightJob {
@@ -85,12 +85,14 @@ class PiperNarrationEngine(
         Thread(runnable, "nuvio-piper-player").apply { isDaemon = true }
     }
 
-    // Rolling RAM cache for 30 sentences (LRU) holding raw WAV bytes
+    // Rolling RAM cache for 60 sentences (LRU) holding raw WAV bytes
     private val ramCache = object : LinkedHashMap<String, ByteArray>(MAX_RAM_CACHE_ENTRIES, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
             return size > MAX_RAM_CACHE_ENTRIES
         }
     }
+    // Secondary map from "voiceId:cleanText" -> cacheKey so prefetch always matches even with slight rate differences
+    private val textToKeyMap = HashMap<String, String>()
     private val ramLock = Any()
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -104,8 +106,6 @@ class PiperNarrationEngine(
     private var activePlayer: MediaPlayer? = null
     @Volatile
     private var activeTempFile: File? = null
-    @Volatile
-    private var activeCompletionLatch: CountDownLatch? = null
     private val playerLock = Any()
 
     private val isSpeaking = AtomicBoolean(false)
@@ -184,9 +184,16 @@ class PiperNarrationEngine(
         val seq = reqSeq.incrementAndGet()
         val currentCancel = cancelSeq.get()
         val cacheKey = buildCacheKey(clean, voice.id, ratePercent)
+        val textKey = "${voice.id}:$clean"
 
         // 1. Check RAM Cache first (< 5ms response)
-        val ramAudio = synchronized(ramLock) { ramCache[cacheKey] }
+        var ramAudio = synchronized(ramLock) { ramCache[cacheKey] }
+        if (ramAudio == null) {
+            val fallbackKey = synchronized(ramLock) { textToKeyMap[textKey] }
+            if (fallbackKey != null) {
+                ramAudio = synchronized(ramLock) { ramCache[fallbackKey] }
+            }
+        }
         if (ramAudio != null) {
             playAudioBytes(ramAudio, seq, currentCancel, cutOnNewer, onResult)
             return
@@ -197,16 +204,16 @@ class PiperNarrationEngine(
         if (diskFile.exists() && diskFile.length() > 44L) {
             val bytes = runCatching { diskFile.readBytes() }.getOrNull()
             if (bytes != null && bytes.size > 44) {
-                synchronized(ramLock) { ramCache[cacheKey] = bytes }
+                synchronized(ramLock) {
+                    ramCache[cacheKey] = bytes
+                    textToKeyMap[textKey] = cacheKey
+                }
                 playAudioBytes(bytes, seq, currentCancel, cutOnNewer, onResult)
                 return
             }
         }
 
-        // 3. Clear prefetch queue so live speech has exclusive priority
-        prefetchQueue.clear()
-
-        // 4. Synthesize via Worker
+        // 3. Synthesize via Worker (keep prefetch queue intact so lookahead continues in background)
         worker.execute {
             if (released || currentCancel != cancelSeq.get()) {
                 onResult?.invoke(false, "superseded")
@@ -234,7 +241,10 @@ class PiperNarrationEngine(
                     val took = System.currentTimeMillis() - t0
                     if (bytes != null && bytes.size > 44) {
                         job.audioBytes = bytes
-                        synchronized(ramLock) { ramCache[cacheKey] = bytes }
+                        synchronized(ramLock) {
+                            ramCache[cacheKey] = bytes
+                            textToKeyMap[textKey] = cacheKey
+                        }
                         saveToDiskCache(diskFile, bytes)
                         NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
                     } else {
@@ -293,7 +303,10 @@ class PiperNarrationEngine(
                 if (onDisk && targetRam) {
                     val bytes = runCatching { diskFile.readBytes() }.getOrNull()
                     if (bytes != null && bytes.size > 44) {
-                        synchronized(ramLock) { ramCache[cacheKey] = bytes }
+                        synchronized(ramLock) {
+                            ramCache[cacheKey] = bytes
+                            textToKeyMap["${voice.id}:$clean"] = cacheKey
+                        }
                         return@execute
                     }
                 }
@@ -301,7 +314,10 @@ class PiperNarrationEngine(
                 val bytes = doSynthesize(clean, voice.id, ratePercent)
                 if (bytes != null && bytes.size > 44) {
                     if (targetRam) {
-                        synchronized(ramLock) { ramCache[cacheKey] = bytes }
+                        synchronized(ramLock) {
+                            ramCache[cacheKey] = bytes
+                            textToKeyMap["${voice.id}:$clean"] = cacheKey
+                        }
                     }
                     saveToDiskCache(diskFile, bytes)
                 }
@@ -338,7 +354,10 @@ class PiperNarrationEngine(
         runCatching { prefetchExecutor.shutdownNow() }
         runCatching { worker.shutdownNow() }
         runCatching { playbackWorker.shutdownNow() }
-        synchronized(ramLock) { ramCache.clear() }
+        synchronized(ramLock) {
+            ramCache.clear()
+            textToKeyMap.clear()
+        }
     }
 
     override fun clearPrefetchQueue() {
@@ -474,6 +493,35 @@ class PiperNarrationEngine(
         ((value shr 8) and 0xFF).toByte()
     )
 
+    private fun stopPlayerWithFade(player: MediaPlayer?, tempFile: File?) {
+        if (player == null) return
+        try {
+            if (!player.isPlaying) {
+                runCatching { player.release() }
+                runCatching { tempFile?.delete() }
+                return
+            }
+            val curVol = narrationVolume
+            // Smooth 60ms fade out to avoid clicks/pops
+            player.setVolume(curVol * 0.4f, curVol * 0.4f)
+            mainHandler.postDelayed({
+                runCatching {
+                    player.setVolume(curVol * 0.05f, curVol * 0.05f)
+                }
+                mainHandler.postDelayed({
+                    runCatching {
+                        if (player.isPlaying) player.stop()
+                        player.release()
+                        tempFile?.delete()
+                    }
+                }, 30L)
+            }, 30L)
+        } catch (t: Throwable) {
+            runCatching { player.release() }
+            runCatching { tempFile?.delete() }
+        }
+    }
+
     private fun playAudioBytes(
         wavBytes: ByteArray,
         seq: Int,
@@ -494,7 +542,6 @@ class PiperNarrationEngine(
                 val tempFile = File.createTempFile("piper_play_", ".wav", appContext.cacheDir)
                 FileOutputStream(tempFile).use { it.write(wavBytes) }
 
-                val latch = CountDownLatch(1)
                 val player = MediaPlayer().apply {
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -504,16 +551,35 @@ class PiperNarrationEngine(
                     )
                     setDataSource(tempFile.absolutePath)
                     setVolume(narrationVolume, narrationVolume)
-                    setOnCompletionListener {
-                        latch.countDown()
-                    }
-                    setOnErrorListener { mp, what, extra ->
-                        Log.w(TAG, "MediaPlayer error: what=$what extra=$extra")
-                        NarrationDiag.log(appContext, "piper: player err what=$what extra=$extra seq=$seq")
-                        latch.countDown()
-                        true
-                    }
                     prepare()
+                }
+
+                player.setOnCompletionListener { mp ->
+                    synchronized(playerLock) {
+                        if (activePlayer == mp) {
+                            activePlayer = null
+                            activeTempFile = null
+                        }
+                    }
+                    runCatching { mp.release() }
+                    runCatching { tempFile.delete() }
+                    NarrationDiag.log(appContext, "piper: play completed seq=$seq")
+                    mainHandler.postDelayed(speechEndCheckRunnable, 300L)
+                }
+
+                player.setOnErrorListener { mp, what, extra ->
+                    Log.w(TAG, "MediaPlayer error: what=$what extra=$extra")
+                    NarrationDiag.log(appContext, "piper: player err what=$what extra=$extra seq=$seq")
+                    synchronized(playerLock) {
+                        if (activePlayer == mp) {
+                            activePlayer = null
+                            activeTempFile = null
+                        }
+                    }
+                    runCatching { mp.release() }
+                    runCatching { tempFile.delete() }
+                    mainHandler.postDelayed(speechEndCheckRunnable, 300L)
+                    true
                 }
 
                 synchronized(playerLock) {
@@ -523,9 +589,25 @@ class PiperNarrationEngine(
                         onResult?.invoke(false, "superseded")
                         return@execute
                     }
+
+                    val prevPlayer = activePlayer
+                    val prevFile = activeTempFile
+
+                    if (prevPlayer != null && prevPlayer.isPlaying) {
+                        val pos = runCatching { prevPlayer.currentPosition }.getOrDefault(0)
+                        val dur = runCatching { prevPlayer.duration }.getOrDefault(0)
+                        val remainingMs = (dur - pos).coerceAtLeast(0)
+
+                        if (remainingMs <= 350) {
+                            // Previous sentence is nearly finished: let it conclude its final word naturally (no cutoff)
+                        } else {
+                            // Previous sentence is overrunning: smooth 60ms fade out to prevent pop and keep on time
+                            stopPlayerWithFade(prevPlayer, prevFile)
+                        }
+                    }
+
                     activePlayer = player
                     activeTempFile = tempFile
-                    activeCompletionLatch = latch
                     player.start()
                 }
 
@@ -534,26 +616,6 @@ class PiperNarrationEngine(
                     mainHandler.post { onSpeechStart() }
                 }
                 onResult?.invoke(true, "playing")
-
-                // Wait for audio playback to complete cleanly so words/sentences are NEVER cut off
-                // 22050Hz * 16-bit mono = 44,100 bytes/sec
-                val maxPlayTimeMs = ((wavBytes.size.toLong() * 1000L) / 44100L) + 600L
-                val finished = latch.await(maxPlayTimeMs.coerceAtLeast(800L), TimeUnit.MILLISECONDS)
-
-                synchronized(playerLock) {
-                    if (activePlayer == player) {
-                        activePlayer = null
-                        activeTempFile = null
-                        activeCompletionLatch = null
-                    }
-                }
-                runCatching { player.stop() }
-                runCatching { player.release() }
-                runCatching { tempFile.delete() }
-                NarrationDiag.log(appContext, "piper: play done seq=$seq (fin=$finished)")
-
-                // Schedule speech end: if no next utterance starts within 300ms, restore volume
-                mainHandler.postDelayed(speechEndCheckRunnable, 300L)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to start MediaPlayer: ${t.message}", t)
                 NarrationDiag.log(appContext, "piper: play failed ${t.javaClass.simpleName}: ${t.message}")
@@ -568,10 +630,8 @@ class PiperNarrationEngine(
             mainHandler.removeCallbacks(speechEndCheckRunnable)
             val player = activePlayer
             val file = activeTempFile
-            val latch = activeCompletionLatch
             activePlayer = null
             activeTempFile = null
-            activeCompletionLatch = null
             runCatching {
                 if (player != null && player.isPlaying) {
                     player.stop()
@@ -579,7 +639,6 @@ class PiperNarrationEngine(
                 player?.release()
             }
             runCatching { file?.delete() }
-            latch?.countDown()
             if (isSpeaking.getAndSet(false)) {
                 mainHandler.post { onSpeechEnd() }
             }
