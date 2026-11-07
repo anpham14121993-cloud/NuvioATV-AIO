@@ -3580,7 +3580,9 @@ private class CueNormalizingTextOutput(
         val processedCues = modifiedList ?: cues
         val mergedCues = PlayerSubtitleUtils.mergeOverlappingCues(processedCues)
         if (mergedCues.isNotEmpty()) {
-            val text = mergedCues.joinToString(" ") { it.text.toString() }.trim()
+            val text = mergedCues.mapNotNull { it.text?.toString()?.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(" ")
             if (text.isNotEmpty()) onCueText(text)
         }
         // The narration keeps reading the line, so the cues are only dropped
@@ -3620,6 +3622,12 @@ private class CueNormalizingTextOutput(
         }
         val processedCues = modifiedList ?: cues
         val mergedCues = PlayerSubtitleUtils.mergeOverlappingCues(processedCues)
+        if (mergedCues.isNotEmpty()) {
+            val text = mergedCues.mapNotNull { it.text?.toString()?.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(" ")
+            if (text.isNotEmpty()) onCueText(text)
+        }
         if (isNarrationHidingSubtitlesProvider()) {
             delegate.onCues(emptyList())
             return

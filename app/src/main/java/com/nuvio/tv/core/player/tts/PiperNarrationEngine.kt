@@ -69,12 +69,15 @@ class PiperNarrationEngine(
         Thread(runnable, "nuvio-piper-worker").apply { isDaemon = true }
     }
 
-    // 2 background prefetch workers with clearable queue
+    // 1 background prefetch worker with lowest priority so it never starves live playback
     private val prefetchQueue = LinkedBlockingQueue<Runnable>()
     private val prefetchExecutor = ThreadPoolExecutor(
-        2, 2, 0L, TimeUnit.MILLISECONDS, prefetchQueue
+        1, 1, 0L, TimeUnit.MILLISECONDS, prefetchQueue
     ) { runnable ->
-        Thread(runnable, "nuvio-piper-prefetch").apply { isDaemon = true }
+        Thread(runnable, "nuvio-piper-prefetch").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }
     }
 
     // Dedicated single-thread playback worker for MediaPlayer
@@ -101,11 +104,22 @@ class PiperNarrationEngine(
     private var activePlayer: MediaPlayer? = null
     @Volatile
     private var activeTempFile: File? = null
+    @Volatile
+    private var activeCompletionLatch: CountDownLatch? = null
     private val playerLock = Any()
 
     private val isSpeaking = AtomicBoolean(false)
     private val isDownloading = AtomicBoolean(false)
     private val reqSeq = AtomicInteger(0)
+    private val cancelSeq = AtomicInteger(0)
+    private val liveSynthesisActive = AtomicBoolean(false)
+    private val speechEndCheckRunnable = Runnable {
+        synchronized(playerLock) {
+            if (activePlayer == null && isSpeaking.getAndSet(false)) {
+                mainHandler.post { onSpeechEnd() }
+            }
+        }
+    }
 
     @Volatile
     private var currentVoiceId: String = ""
@@ -168,12 +182,13 @@ class PiperNarrationEngine(
         }
 
         val seq = reqSeq.incrementAndGet()
+        val currentCancel = cancelSeq.get()
         val cacheKey = buildCacheKey(clean, voice.id, ratePercent)
 
         // 1. Check RAM Cache first (< 5ms response)
         val ramAudio = synchronized(ramLock) { ramCache[cacheKey] }
         if (ramAudio != null) {
-            playAudioBytes(ramAudio, seq, cutOnNewer, onResult)
+            playAudioBytes(ramAudio, seq, currentCancel, cutOnNewer, onResult)
             return
         }
 
@@ -183,14 +198,17 @@ class PiperNarrationEngine(
             val bytes = runCatching { diskFile.readBytes() }.getOrNull()
             if (bytes != null && bytes.size > 44) {
                 synchronized(ramLock) { ramCache[cacheKey] = bytes }
-                playAudioBytes(bytes, seq, cutOnNewer, onResult)
+                playAudioBytes(bytes, seq, currentCancel, cutOnNewer, onResult)
                 return
             }
         }
 
-        // 3. Synthesize via Worker
+        // 3. Clear prefetch queue so live speech has exclusive priority
+        prefetchQueue.clear()
+
+        // 4. Synthesize via Worker
         worker.execute {
-            if (released || seq != reqSeq.get()) {
+            if (released || currentCancel != cancelSeq.get()) {
                 onResult?.invoke(false, "superseded")
                 return@execute
             }
@@ -210,6 +228,7 @@ class PiperNarrationEngine(
 
             if (isOriginator) {
                 try {
+                    liveSynthesisActive.set(true)
                     val t0 = System.currentTimeMillis()
                     val bytes = doSynthesize(clean, voice.id, ratePercent)
                     val took = System.currentTimeMillis() - t0
@@ -217,7 +236,7 @@ class PiperNarrationEngine(
                         job.audioBytes = bytes
                         synchronized(ramLock) { ramCache[cacheKey] = bytes }
                         saveToDiskCache(diskFile, bytes)
-                        NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length})")
+                        NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
                     } else {
                         job.failed = true
                         NarrationDiag.log(appContext, "piper: synth null/empty in ${took}ms (len=${clean.length})")
@@ -227,6 +246,7 @@ class PiperNarrationEngine(
                     NarrationDiag.log(appContext, "piper: synth err ${t.javaClass.simpleName}: ${t.message}")
                     job.failed = true
                 } finally {
+                    liveSynthesisActive.set(false)
                     job.latch.countDown()
                     inFlightJobs.remove(cacheKey)
                 }
@@ -234,14 +254,14 @@ class PiperNarrationEngine(
                 job.latch.await(5, TimeUnit.SECONDS)
             }
 
-            if (released || seq != reqSeq.get()) {
+            if (released || currentCancel != cancelSeq.get()) {
                 onResult?.invoke(false, "superseded")
                 return@execute
             }
 
             val audio = job.audioBytes
             if (audio != null && audio.size > 44) {
-                playAudioBytes(audio, seq, cutOnNewer, onResult)
+                playAudioBytes(audio, seq, currentCancel, cutOnNewer, onResult)
             } else {
                 NarrationDiag.log(appContext, "piper: synth failed for len=${clean.length}")
                 mainHandler.post { onError(clean, ratePercent) }
@@ -251,7 +271,7 @@ class PiperNarrationEngine(
     }
 
     override fun prefetch(text: String, voiceApiName: String, ratePercent: Int, targetRam: Boolean) {
-        if (released) return
+        if (released || liveSynthesisActive.get()) return
         val voice = PiperVoiceCatalog.findVoice(voiceApiName)
         val clean = PiperPhonemizer.cleanSubtitleText(text)
         if (clean.isBlank()) return
@@ -266,9 +286,10 @@ class PiperNarrationEngine(
 
         if (!prefetchInFlight.add(cacheKey)) return
 
+        val currentCancel = cancelSeq.get()
         prefetchExecutor.execute {
             try {
-                if (released) return@execute
+                if (released || liveSynthesisActive.get() || currentCancel != cancelSeq.get()) return@execute
                 if (onDisk && targetRam) {
                     val bytes = runCatching { diskFile.readBytes() }.getOrNull()
                     if (bytes != null && bytes.size > 44) {
@@ -293,6 +314,7 @@ class PiperNarrationEngine(
     }
 
     override fun stop() {
+        cancelSeq.incrementAndGet()
         playbackWorker.execute {
             stopPlayerInternal()
         }
@@ -301,6 +323,7 @@ class PiperNarrationEngine(
     override fun release() {
         released = true
         reqSeq.incrementAndGet()
+        cancelSeq.incrementAndGet()
         stop()
 
         worker.execute {
@@ -335,8 +358,8 @@ class PiperNarrationEngine(
         val ids = config.textToIds(phonemes)
         if (ids.isEmpty()) return null
 
-        // Calculate speed multiplier from rate percent: 0% -> 1.0, 30% -> 1.3
-        val speedMultiplier = (1.0f + ratePercent / 100f).coerceIn(0.6f, 2.2f)
+        // Calculate speed multiplier from rate percent: 0% -> 1.0, 70% -> 1.7, 140% -> 2.4
+        val speedMultiplier = (1.0f + ratePercent / 100f).coerceIn(0.6f, 2.6f)
 
         return synchronized(sessionLock) {
             val curSession = ortSession ?: return@synchronized null
@@ -454,23 +477,24 @@ class PiperNarrationEngine(
     private fun playAudioBytes(
         wavBytes: ByteArray,
         seq: Int,
+        currentCancel: Int,
         cutOnNewer: Boolean,
         onResult: ((ok: Boolean, detail: String) -> Unit)?
     ) {
         playbackWorker.execute {
-            if (released || seq != reqSeq.get()) {
+            if (released || currentCancel != cancelSeq.get()) {
                 onResult?.invoke(false, "superseded")
                 return@execute
             }
 
             try {
-                if (cutOnNewer) {
-                    stopPlayerInternal()
-                }
+                // Cancel pending speech end since a new utterance is starting
+                mainHandler.removeCallbacks(speechEndCheckRunnable)
 
                 val tempFile = File.createTempFile("piper_play_", ".wav", appContext.cacheDir)
                 FileOutputStream(tempFile).use { it.write(wavBytes) }
 
+                val latch = CountDownLatch(1)
                 val player = MediaPlayer().apply {
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -480,45 +504,20 @@ class PiperNarrationEngine(
                     )
                     setDataSource(tempFile.absolutePath)
                     setVolume(narrationVolume, narrationVolume)
-                    setOnCompletionListener { mp ->
-                        playbackWorker.execute {
-                            synchronized(playerLock) {
-                                if (activePlayer == mp) {
-                                    activePlayer = null
-                                    activeTempFile = null
-                                    if (isSpeaking.getAndSet(false)) {
-                                        mainHandler.post { onSpeechEnd() }
-                                    }
-                                }
-                            }
-                            runCatching { mp.release() }
-                            runCatching { tempFile.delete() }
-                            NarrationDiag.log(appContext, "piper: play completed seq=$seq")
-                        }
+                    setOnCompletionListener {
+                        latch.countDown()
                     }
                     setOnErrorListener { mp, what, extra ->
                         Log.w(TAG, "MediaPlayer error: what=$what extra=$extra")
                         NarrationDiag.log(appContext, "piper: player err what=$what extra=$extra seq=$seq")
-                        playbackWorker.execute {
-                            synchronized(playerLock) {
-                                if (activePlayer == mp) {
-                                    activePlayer = null
-                                    activeTempFile = null
-                                    if (isSpeaking.getAndSet(false)) {
-                                        mainHandler.post { onSpeechEnd() }
-                                    }
-                                }
-                            }
-                            runCatching { mp.release() }
-                            runCatching { tempFile.delete() }
-                        }
+                        latch.countDown()
                         true
                     }
                     prepare()
                 }
 
                 synchronized(playerLock) {
-                    if (released || seq != reqSeq.get()) {
+                    if (released || currentCancel != cancelSeq.get()) {
                         runCatching { player.release() }
                         runCatching { tempFile.delete() }
                         onResult?.invoke(false, "superseded")
@@ -526,6 +525,7 @@ class PiperNarrationEngine(
                     }
                     activePlayer = player
                     activeTempFile = tempFile
+                    activeCompletionLatch = latch
                     player.start()
                 }
 
@@ -534,6 +534,26 @@ class PiperNarrationEngine(
                     mainHandler.post { onSpeechStart() }
                 }
                 onResult?.invoke(true, "playing")
+
+                // Wait for audio playback to complete cleanly so words/sentences are NEVER cut off
+                // 22050Hz * 16-bit mono = 44,100 bytes/sec
+                val maxPlayTimeMs = ((wavBytes.size.toLong() * 1000L) / 44100L) + 600L
+                val finished = latch.await(maxPlayTimeMs.coerceAtLeast(800L), TimeUnit.MILLISECONDS)
+
+                synchronized(playerLock) {
+                    if (activePlayer == player) {
+                        activePlayer = null
+                        activeTempFile = null
+                        activeCompletionLatch = null
+                    }
+                }
+                runCatching { player.stop() }
+                runCatching { player.release() }
+                runCatching { tempFile.delete() }
+                NarrationDiag.log(appContext, "piper: play done seq=$seq (fin=$finished)")
+
+                // Schedule speech end: if no next utterance starts within 300ms, restore volume
+                mainHandler.postDelayed(speechEndCheckRunnable, 300L)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to start MediaPlayer: ${t.message}", t)
                 NarrationDiag.log(appContext, "piper: play failed ${t.javaClass.simpleName}: ${t.message}")
@@ -545,10 +565,13 @@ class PiperNarrationEngine(
 
     private fun stopPlayerInternal() {
         synchronized(playerLock) {
+            mainHandler.removeCallbacks(speechEndCheckRunnable)
             val player = activePlayer
             val file = activeTempFile
+            val latch = activeCompletionLatch
             activePlayer = null
             activeTempFile = null
+            activeCompletionLatch = null
             runCatching {
                 if (player != null && player.isPlaying) {
                     player.stop()
@@ -556,6 +579,7 @@ class PiperNarrationEngine(
                 player?.release()
             }
             runCatching { file?.delete() }
+            latch?.countDown()
             if (isSpeaking.getAndSet(false)) {
                 mainHandler.post { onSpeechEnd() }
             }

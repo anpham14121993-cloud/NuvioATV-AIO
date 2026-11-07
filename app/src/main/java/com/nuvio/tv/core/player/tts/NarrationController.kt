@@ -296,14 +296,33 @@ class NarrationController(
     }
 
     private fun chooseRatePercent(charCount: Int, windowSec: Float?): Int {
-        val fit = if (windowSec == null || windowSec <= 0f) {
-            0
-        } else {
-            val window = windowSec?.coerceAtLeast(NarrationController.MIN_SPEECH_WINDOW_SEC) ?: NarrationController.MIN_SPEECH_WINDOW_SEC
-            val estimated = charCount / NarrationController.VI_CHARS_PER_SECOND
-            if (estimated <= window) 0 else (((estimated / window) - 1f) * 100f).toInt()
+        // 1. Length-based speed bump: long dialogue sentences naturally read faster
+        val lengthBump = when {
+            charCount >= 100 -> 50
+            charCount >= 70 -> 35
+            charCount >= 45 -> 20
+            charCount >= 25 -> 10
+            else -> 0
         }
-        return (NarrationController.BASE_RATE_PERCENT + fit).coerceIn(0, NarrationController.MAX_RATE_BUMP_PERCENT) / NarrationController.RATE_STEP * NarrationController.RATE_STEP
+
+        // 2. Time window-based fitting bump: if dialogue must fit within a tight window
+        val windowBump = if (windowSec != null && windowSec > 0f) {
+            val window = windowSec.coerceAtLeast(NarrationController.MIN_SPEECH_WINDOW_SEC)
+            val estimated = charCount / NarrationController.VI_CHARS_PER_SECOND
+            if (estimated > window) {
+                (((estimated / window) - 1f) * 90f).toInt().coerceAtLeast(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+
+        val totalRate = NarrationController.BASE_RATE_PERCENT + lengthBump + windowBump
+        return totalRate.coerceIn(
+            NarrationController.BASE_RATE_PERCENT,
+            NarrationController.MAX_RATE_BUMP_PERCENT
+        ) / NarrationController.RATE_STEP * NarrationController.RATE_STEP
     }
 
     private fun notifySpeechStart() {
@@ -458,10 +477,10 @@ class NarrationController(
         private const val TAG = "NuvioNarration"
         const val FADE_STEPS = 10
         const val FADE_STEP_MS = 30L
-        const val VI_CHARS_PER_SECOND = 20f
+        const val VI_CHARS_PER_SECOND = 24f
         const val MIN_SPEECH_WINDOW_SEC = 1.0f
-        const val BASE_RATE_PERCENT = 50
-        const val MAX_RATE_BUMP_PERCENT = 80
+        const val BASE_RATE_PERCENT = 65
+        const val MAX_RATE_BUMP_PERCENT = 140
         const val NEXT_CUE_GUARD_MS = 100L
         const val CUE_INTERVAL_EMA_ALPHA = 0.35f
         const val RATE_STEP = 5
