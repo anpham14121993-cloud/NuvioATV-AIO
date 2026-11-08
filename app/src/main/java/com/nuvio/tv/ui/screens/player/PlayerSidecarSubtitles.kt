@@ -274,7 +274,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             nController.clearPrefetchQueue()
         }
 
-        val leadTimeUs = 150_000L // 150ms lead time for audio pipeline so acoustic speech starts in exact sync with subtitle appearance
+        val leadTimeUs = 200_000L // 150ms lead time for audio pipeline so acoustic speech starts in exact sync with subtitle appearance
         val candidate = cues.firstOrNull { entry ->
             entry.startTimeUs > lastNarratedCueStartTimeUs &&
                 (positionUs + leadTimeUs) >= entry.startTimeUs &&
@@ -302,7 +302,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
                     (naturalDurationUs / 1_000_000f).coerceIn(1.0f, 7.0f)
                 }
                 nController.onCueText(entryText, windowSec)
-                prefetchUpcomingSidecarCues(cues, positionUs, count = 12)
+                prefetchUpcomingSidecarCues(cues, positionUs, count = 20)
             }
         }
     }
@@ -318,7 +318,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
     val sanitized = active.map { SubtitleMojibakeSanitizer.sanitizeCue(it) }
     val filtered = if (stripSdh) SubtitleSdhFilter.filterCues(sanitized) else sanitized
     val merged = PlayerSubtitleUtils.mergeOverlappingCues(filtered)
-    prefetchUpcomingSidecarCues(cues, positionUs, count = 12)
+    prefetchUpcomingSidecarCues(cues, positionUs, count = 20)
     val currentKey = activeSidecarSubtitleKey ?: return
     val currentGeneration = activeSidecarGeneration.takeIf { it != 0L } ?: return
     postToSubtitleView { view ->
@@ -464,7 +464,7 @@ internal fun parseSidecarTimedCuesLenient(rawText: String, sourceUrl: String): L
 internal fun PlayerRuntimeController.prefetchUpcomingSidecarCues(
     cues: List<CuesWithTiming>,
     positionUs: Long,
-    count: Int = 12
+    count: Int = 20
 ) {
     val nController = narration() ?: return
     if (cues.isEmpty()) return

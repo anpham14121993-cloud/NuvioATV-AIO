@@ -326,7 +326,7 @@ data class PlayerSettings(
     /** Offline Vietnamese narration (VieNeu TTS) for the current subtitle line. */
     val ttsNarrationEnabled: Boolean = false,
     val ttsNarrationVolume: Int = 90,
-    val ttsNarrationVoice: String = "Ban Mai",
+    val ttsNarrationVoice: String = "Google TTS (Mặc định)",
     val ttsDuckVolume: Int = 50,
     /** What the subtitle track does while the narration speaks: [NarrationSubtitleMode.SHOW] or [NarrationSubtitleMode.HIDE]. */
     val ttsNarrationSubtitleMode: String = NarrationSubtitleMode.SHOW,
@@ -1255,7 +1255,7 @@ class PlayerSettingsDataStore @Inject constructor(
                 ttsNarrationVoice = when (val v = prefs[ttsNarrationVoiceKey]) {
                     "Adam", "Nam Minh" -> "Ngọc Ngạn"
                     "Thùy Dung", "Hoài My" -> "Ban Mai"
-                    null -> "Ban Mai"
+                    null -> "Google TTS (Mặc định)"
                     else -> v
                 },
                 ttsDuckVolume = prefs[ttsDuckVolumeKey] ?: 50,

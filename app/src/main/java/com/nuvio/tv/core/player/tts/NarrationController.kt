@@ -38,7 +38,7 @@ class NarrationController(
     private var triedCreateEngine = false
 
     @Volatile
-    var narrationVoice: String = "Ban Mai"
+    var narrationVoice: String = "Google TTS (Mặc định)"
 
     private val ttsReady = AtomicBoolean(false)
     private val speaking = AtomicBoolean(false)

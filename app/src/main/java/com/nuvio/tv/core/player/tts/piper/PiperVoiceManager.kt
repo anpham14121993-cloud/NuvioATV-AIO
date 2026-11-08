@@ -7,6 +7,7 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.nuvio.tv.core.player.tts.google.GoogleTtsApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -15,10 +16,12 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Manages downloading, deleting, checking, and audio previewing of Vietnamese Piper TTS voices.
+ * Manages downloading, deleting, checking, and audio previewing of Vietnamese TTS voices.
+ * Supports both high-speed Online Google TTS (Vax default) and Offline Piper ONNX voices.
  */
 object PiperVoiceManager {
     private const val TAG = "PiperVoiceManager"
@@ -32,6 +35,10 @@ object PiperVoiceManager {
         .followSslRedirects(true)
         .build()
 
+    private val previewExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "nuvio-voice-preview").apply { isDaemon = true }
+    }
+
     @Volatile
     private var activePreviewPlayer: MediaPlayer? = null
     @Volatile
@@ -43,6 +50,7 @@ object PiperVoiceManager {
     }
 
     fun isVoiceDownloaded(context: Context, voiceId: String): Boolean {
+        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) return true
         val dir = getModelsDir(context)
         val model = File(dir, "$voiceId.onnx")
         val config = File(dir, "$voiceId.onnx.json")
@@ -50,12 +58,14 @@ object PiperVoiceManager {
     }
 
     fun getVoiceFileSizeMb(context: Context, voiceId: String): Float {
+        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) return 0f
         val dir = getModelsDir(context)
         val model = File(dir, "$voiceId.onnx")
         return if (model.exists()) model.length() / (1024f * 1024f) else 0f
     }
 
     fun deleteVoice(context: Context, voiceId: String): Boolean {
+        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) return false
         val dir = getModelsDir(context)
         val model = File(dir, "$voiceId.onnx")
         val config = File(dir, "$voiceId.onnx.json")
@@ -69,6 +79,7 @@ object PiperVoiceManager {
         voiceId: String,
         onProgress: (Float) -> Unit = {}
     ): Boolean = withContext(Dispatchers.IO) {
+        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) return@withContext true
         val dir = getModelsDir(context)
         val modelFile = File(dir, "$voiceId.onnx")
         val configFile = File(dir, "$voiceId.onnx.json")
@@ -156,8 +167,8 @@ object PiperVoiceManager {
 
     /**
      * Plays a voice sample preview.
-     * Looks first in asset directory "voice_samples/{voiceId}.wav",
-     * caching it to a disk file so MediaPlayer can decode it without offset/header issues.
+     * For Google TTS: fetches online sample from Google TTS.
+     * For Piper offline voices: plays from asset directory "voice_samples/{voiceId}.wav".
      */
     fun playVoicePreview(
         context: Context,
@@ -167,57 +178,91 @@ object PiperVoiceManager {
     ): Boolean {
         stopVoicePreview()
 
-        synchronized(previewLock) {
-            try {
-                val previewDir = File(context.cacheDir, "piper_previews").apply { mkdirs() }
-                val previewFile = File(previewDir, "sample_$voiceId.wav")
+        val previewDir = File(context.cacheDir, "piper_previews").apply { mkdirs() }
 
-                if (!previewFile.exists() || previewFile.length() < 1000L) {
-                    val assetStream = runCatching { context.assets.open("voice_samples/$voiceId.wav") }.getOrNull()
-                    if (assetStream != null) {
-                        assetStream.use { input ->
-                            FileOutputStream(previewFile).use { output ->
-                                input.copyTo(output)
-                            }
-                        }
-                    }
-                }
-
-                if (previewFile.exists() && previewFile.length() > 44L) {
-                    val player = MediaPlayer().apply {
-                        setAudioAttributes(
-                            AudioAttributes.Builder()
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .build()
-                        )
-                        setDataSource(previewFile.absolutePath)
-                        setVolume(1.0f, 1.0f)
-                        setOnCompletionListener {
-                            stopVoicePreview()
-                            mainHandler.post { onPlaybackEnded() }
-                        }
-                        setOnErrorListener { _, what, extra ->
-                            Log.w(TAG, "Preview MediaPlayer error for $voiceId: what=$what extra=$extra")
-                            stopVoicePreview()
-                            mainHandler.post { onPlaybackEnded() }
-                            true
-                        }
-                        prepare()
-                        start()
-                    }
-                    activePreviewPlayer = player
-                    mainHandler.post { onPlaybackStarted() }
-                    return true
-                } else {
-                    Log.w(TAG, "Preview sample not found for $voiceId in assets")
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "Could not play asset preview for $voiceId: ${t.message}", t)
-                stopVoicePreview()
+        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) {
+            val previewFile = File(previewDir, "sample_google_tts.mp3")
+            if (previewFile.exists() && previewFile.length() > 1000L) {
+                return startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
             }
+            onPlaybackStarted()
+            previewExecutor.execute {
+                val synth = GoogleTtsApi.synthesizeToFile(context, "Xin chào, đây là giọng đọc thuyết minh tiếng Việt.")
+                if (synth != null && synth.exists()) {
+                    runCatching {
+                        synth.copyTo(previewFile, overwrite = true)
+                        synth.delete()
+                    }
+                    mainHandler.post {
+                        startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
+                    }
+                } else {
+                    mainHandler.post { onPlaybackEnded() }
+                }
+            }
+            return true
+        }
 
+        val previewFile = File(previewDir, "sample_$voiceId.wav")
+        if (!previewFile.exists() || previewFile.length() < 1000L) {
+            val assetStream = runCatching { context.assets.open("voice_samples/$voiceId.wav") }.getOrNull()
+            if (assetStream != null) {
+                assetStream.use { input ->
+                    FileOutputStream(previewFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+        }
+
+        if (previewFile.exists() && previewFile.length() > 44L) {
+            return startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
+        } else {
+            Log.w(TAG, "Preview sample not found for $voiceId in assets")
             return false
+        }
+    }
+
+    private fun startMediaPlayer(
+        file: File,
+        voiceId: String,
+        onPlaybackStarted: () -> Unit,
+        onPlaybackEnded: () -> Unit
+    ): Boolean {
+        synchronized(previewLock) {
+            stopVoicePreview()
+            return try {
+                val player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .build()
+                    )
+                    setDataSource(file.absolutePath)
+                    setVolume(1.0f, 1.0f)
+                    setOnCompletionListener {
+                        stopVoicePreview()
+                        mainHandler.post { onPlaybackEnded() }
+                    }
+                    setOnErrorListener { _, what, extra ->
+                        Log.w(TAG, "Preview MediaPlayer error for $voiceId: what=$what extra=$extra")
+                        stopVoicePreview()
+                        mainHandler.post { onPlaybackEnded() }
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+                activePreviewPlayer = player
+                mainHandler.post { onPlaybackStarted() }
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not start preview for $voiceId: ${t.message}", t)
+                stopVoicePreview()
+                mainHandler.post { onPlaybackEnded() }
+                false
+            }
         }
     }
 

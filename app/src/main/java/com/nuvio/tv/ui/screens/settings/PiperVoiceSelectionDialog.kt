@@ -219,9 +219,15 @@ fun PiperVoiceSelectionDialog(
                                             color = NuvioTheme.colors.TextTertiary
                                         )
                                     } else {
-                                        val mbInt = if (sizeMb > 0) sizeMb.toInt() else 60
+                                        val isOnline = PiperVoiceCatalog.isOnlineVoice(voice.id)
+                                        val statusText = if (isOnline) {
+                                            "Trực tuyến · Sẵn sàng sử dụng"
+                                        } else {
+                                            val mbInt = if (sizeMb > 0) sizeMb.toInt() else 63
+                                            stringResource(R.string.piper_voice_downloaded, mbInt)
+                                        }
                                         Text(
-                                            text = stringResource(R.string.piper_voice_downloaded, mbInt),
+                                            text = statusText,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = Color(0xFF81C784)
                                         )
@@ -307,7 +313,7 @@ fun PiperVoiceSelectionDialog(
                         }
 
                         // 3. Button "Xóa" (Only available when downloaded and not currently active)
-                        if (isDownloaded && !isSelected) {
+                        if (isDownloaded && !isSelected && !PiperVoiceCatalog.isOnlineVoice(voice.id)) {
                             Card(
                                 onClick = {
                                     PiperVoiceManager.deleteVoice(context, voice.id)
