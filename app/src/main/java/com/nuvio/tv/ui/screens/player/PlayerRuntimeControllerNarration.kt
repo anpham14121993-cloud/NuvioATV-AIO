@@ -65,18 +65,35 @@ internal fun PlayerRuntimeController.observeNarrationStatus() {
 }
 
 /**
+ * Releases the narration engine and clears its reference on final player teardown.
+ */
+internal fun PlayerRuntimeController.releaseNarrationController() {
+    runCatching { narrationController?.release() }
+    narrationController = null
+}
+
+/**
  * Turns the narration on and remembers what should happen to the subtitles.
  */
 internal fun PlayerRuntimeController.enableNarration(subtitleMode: String) {
     val mode = if (subtitleMode == NarrationSubtitleMode.HIDE) NarrationSubtitleMode.HIDE else NarrationSubtitleMode.SHOW
     Log.i(PlayerRuntimeController.TAG, "enableNarration: subtitleMode=$mode")
-    scope.launch {
-        playerSettingsDataStore.setTtsNarrationSubtitleMode(mode)
-        playerSettingsDataStore.setTtsNarrationEnabled(true)
+    lastNarratedCueStartTimeUs = -1L
+    val settings = currentPlayerSettingsForReport
+    narration()?.let { controller ->
+        controller.setVolumePercent(settings.ttsNarrationVolume)
+        controller.narrationVoice = _uiState.value.narrationVoice.ifBlank { settings.ttsNarrationVoice }
+        controller.duckLevelPercent = settings.ttsDuckVolume
+        controller.setEnabled(true)
     }
-    narration()?.setEnabled(true)
     _uiState.update {
         it.copy(narrationEnabled = true, narrationSubtitleMode = mode, showNarrationDialog = false)
+    }
+    scope.launch {
+        // Persist enabled BEFORE subtitle mode so DataStore does not emit an intermediate
+        // (enabled=false, mode=newMode) snapshot that temporarily stops the narration controller.
+        playerSettingsDataStore.setTtsNarrationEnabled(true)
+        playerSettingsDataStore.setTtsNarrationSubtitleMode(mode)
     }
     applyNarrationSubtitleVisibility(true, mode)
     ensureNarrationSubtitleSelected()

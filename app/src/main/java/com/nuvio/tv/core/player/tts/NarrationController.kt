@@ -85,6 +85,7 @@ class NarrationController(
 
     private val progressListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) {
+            lastError.value = null
             speaking.set(true)
             duckPlayer()
         }
@@ -97,11 +98,13 @@ class NarrationController(
         @Deprecated("Deprecated in Java")
         override fun onError(utteranceId: String?) {
             speaking.set(false)
+            lastError.value = "System TTS playback error"
             unduckPlayer()
         }
 
         override fun onError(utteranceId: String?, errorCode: Int) {
             speaking.set(false)
+            lastError.value = "System TTS error ($errorCode)"
             unduckPlayer()
         }
     }
@@ -118,12 +121,18 @@ class NarrationController(
                 NarrationDiag.log(appContext, "ctrl: create piper offline narration engine")
                 NarrationEngineFactory.create(
                     context = appContext,
-                    onSpeechStart = { notifySpeechStart() },
+                    onSpeechStart = {
+                        lastError.value = null
+                        status.value = NarrationEngineStatus.READY
+                        notifySpeechStart()
+                    },
                     onSpeechEnd = { notifySpeechEnd() },
-                    onError = { failedText, failedRate -> handleFallbackSpeak(failedText, failedRate) },
+                    onError = { failedText, failedRate, reason -> handleFallbackSpeak(failedText, failedRate, reason) },
                     onStatus = { state -> status.value = state },
                 )
             }.onFailure {
+                lastError.value = "Engine init failed: ${it.message ?: it.javaClass.simpleName}"
+                status.value = NarrationEngineStatus.FAILED
                 NarrationDiag.log(appContext, "ctrl: engine create failed ${it.javaClass.simpleName}")
             }.getOrNull().also { engine = it }
         }
@@ -182,6 +191,7 @@ class NarrationController(
             stopSpeaking()
             unduckPlayer()
         } else {
+            lastError.value = null
             start()
             warmUpEngine()
         }
@@ -273,7 +283,7 @@ class NarrationController(
         val e = engineOrCreate()
         if (e == null) {
             NarrationDiag.log(appContext, "speak: no engine -> fallback")
-            handleFallbackSpeak(text, rate)
+            handleFallbackSpeak(text, rate, "Narration engine unavailable")
             return
         }
         e.setNarrationVolume(narrationVolume)
@@ -288,16 +298,18 @@ class NarrationController(
         } catch (t: Throwable) {
             Log.e("NuvioNarration", "Narration speak failed, falling back", t)
             NarrationDiag.log(appContext, "speak: threw ${t.javaClass.simpleName} -> fallback")
-            handleFallbackSpeak(text, rate)
+            handleFallbackSpeak(text, rate, "Speak error: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
-    private fun handleFallbackSpeak(text: String, rate: Int) {
+    private fun handleFallbackSpeak(text: String, rate: Int, reason: String? = null) {
         if (systemTtsStatus == SystemTtsStatus.READY && ttsReady.get()) {
-            NarrationDiag.log(appContext, "fallback: Google/System TTS (ready) len=${text.length}")
+            NarrationDiag.log(appContext, "fallback: System TTS (reason=${reason ?: "primary failed"}) len=${text.length}")
             systemSpeak(text, rate)
         } else {
-            NarrationDiag.log(appContext, "fallback: system tts unavailable (sysStatus=$systemTtsStatus)")
+            val detail = reason ?: "TTS playback failed"
+            lastError.value = "$detail (System TTS: $systemTtsStatus)"
+            NarrationDiag.log(appContext, "fallback: unavailable ($detail / sysStatus=$systemTtsStatus)")
             unduckPlayer()
         }
     }
@@ -437,11 +449,12 @@ class NarrationController(
         if (rawText.isNullOrBlank()) return null
         var text = rawText.replace(Regex("<[^>]*>"), " ")
             .replace("&nbsp;", " ")
-            .replace("&", "&")
-            .replace("<", "<")
-            .replace(">", ">")
-            .replace("\"", "\"")
-            .replace("'", "'")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
             .replace(Regex("\\{[^}]*\\}"), " ")
             .replace(Regex("\\\\[Nnh]"), " ")
             .replace(Regex("[\\r\\n]+"), " ")

@@ -12,7 +12,7 @@ object NarrationEngineFactory {
         context: Context,
         onSpeechStart: () -> Unit,
         onSpeechEnd: () -> Unit,
-        onError: (text: String, rate: Int) -> Unit,
+        onError: (text: String, rate: Int, reason: String?) -> Unit,
         onStatus: (NarrationEngineStatus) -> Unit = {},
         onStage: (String) -> Unit = {},
     ): NarrationTtsEngine = PiperNarrationEngine(

@@ -352,6 +352,7 @@ class PlayerRuntimeController(
         PlayerMemoryReporter.stopSampling(context)
         releaseProcessWideReferences()
         mediaSourceFactory.evictCachedSession()
+        releaseNarrationController()
         releasePlayer()
         playerSession.close()
     }
@@ -1062,6 +1063,7 @@ class PlayerRuntimeController(
         ScrubGlide.stop()
         playerSession.close()
         stopServerPlayback()
+        releaseNarrationController()
         releasePlayer()
         stopTorrentStream()
         torrentService.shutdown()

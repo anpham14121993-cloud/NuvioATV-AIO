@@ -30,8 +30,13 @@ internal fun PlayerRuntimeController.releasePlayer(
         flushPlaybackSnapshotForSwitchOrExit()
     }
 
-    runCatching { narrationController?.release() }
-    narrationController = null
+    // Keep NarrationController alive across internal player rebuilds (AFR, libass, tunneling,
+    // track switches, failover) so observeNarrationStatus() and enabled/voice/volume state
+    // are not orphaned. Final teardown releases it in stopAndRelease() and onCleared().
+    runCatching {
+        narrationController?.stopSpeaking()
+        narrationController?.clearPrefetchQueue()
+    }
 
     notifyAudioSessionUpdate(false)
     unregisterAudioDelayRouteCallback()

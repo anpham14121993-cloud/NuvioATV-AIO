@@ -266,7 +266,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
         ).coerceAtLeast(0L)
 
     // Narrate each cue entry exactly at its start time to prevent missed cues during dialogue overlap
-    val nController = narration()
+    val nController = if (_uiState.value.narrationEnabled) narration() else null
     if (nController != null) {
         // Reset tracking if playhead jumped backwards or sought forward significantly
         if (lastNarratedCueStartTimeUs > 0L && (positionUs < lastNarratedCueStartTimeUs - 1_500_000L || positionUs > lastNarratedCueStartTimeUs + 10_000_000L)) {
@@ -302,7 +302,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
                     (naturalDurationUs / 1_000_000f).coerceIn(1.0f, 7.0f)
                 }
                 nController.onCueText(entryText, windowSec)
-                prefetchUpcomingSidecarCues(cues, positionUs, count = 20)
+                prefetchUpcomingSidecarCues(cues, positionUs, count = 6)
             }
         }
     }

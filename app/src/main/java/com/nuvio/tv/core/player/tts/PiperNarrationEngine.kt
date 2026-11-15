@@ -48,7 +48,7 @@ class PiperNarrationEngine(
     private val appContext: Context,
     private val onSpeechStart: () -> Unit = {},
     private val onSpeechEnd: () -> Unit = {},
-    private val onError: (text: String, rate: Int) -> Unit = { _, _ -> },
+    private val onError: (text: String, rate: Int, reason: String?) -> Unit = { _, _, _ -> },
     private val onStatus: (NarrationEngineStatus) -> Unit = {},
     private val onStage: (String) -> Unit = {},
 ) : NarrationTtsEngine {
@@ -87,6 +87,13 @@ class PiperNarrationEngine(
         context = appContext,
         onSpeechStart = onSpeechStart,
         onSpeechEnd = onSpeechEnd,
+        onPlaybackError = { item, reason ->
+            mainHandler.post {
+                if (!released && item.text.isNotBlank()) {
+                    onError(item.text, item.ratePercent, reason)
+                }
+            }
+        },
     )
 
     private val prefetchLock = Any()
@@ -212,7 +219,9 @@ class PiperNarrationEngine(
                     file = prefetched.file,
                     speechRate = rate,
                     isTimeStretched = prefetched.timeStretched,
-                    targetDurationMs = targetDurationMs
+                    targetDurationMs = targetDurationMs,
+                    text = clean,
+                    ratePercent = ratePercent,
                 )
             )
             onResult?.invoke(true, "cache_hit")
@@ -228,22 +237,26 @@ class PiperNarrationEngine(
 
             var audioFile: File? = null
             var usedOfflinePiper = false
+            var failureReason: String? = null
 
             // A. If Online Google TTS is selected (Vax Default):
             if (PiperVoiceCatalog.isOnlineVoice(voice.id)) {
                 try {
                     liveSynthesisActive.set(true)
                     val t0 = System.currentTimeMillis()
-                    audioFile = GoogleTtsApi.synthesizeToFile(appContext, clean)
+                    val result = GoogleTtsApi.synthesize(appContext, clean)
                     val took = System.currentTimeMillis() - t0
+                    audioFile = result.file
                     if (audioFile != null && audioFile.exists()) {
                         NarrationDiag.log(appContext, "google: synth ok in ${took}ms (len=${clean.length})")
                     } else {
-                        NarrationDiag.log(appContext, "google: synth failed in ${took}ms")
+                        failureReason = result.error ?: "Google TTS failed"
+                        NarrationDiag.log(appContext, "google: synth failed ($failureReason) in ${took}ms")
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Google TTS live synthesis error: ${t.message}", t)
-                    NarrationDiag.log(appContext, "google: err ${t.javaClass.simpleName}")
+                    failureReason = "${t.javaClass.simpleName}: ${t.message ?: ""}".trimEnd(':', ' ')
+                    NarrationDiag.log(appContext, "google: err $failureReason")
                 } finally {
                     liveSynthesisActive.set(false)
                 }
@@ -253,7 +266,11 @@ class PiperNarrationEngine(
                 if (!isDownloaded) {
                     // Model not downloaded -> seamlessly fall back to Google TTS
                     NarrationDiag.log(appContext, "piper: voice ${voice.id} not downloaded -> fallback Google TTS")
-                    audioFile = GoogleTtsApi.synthesizeToFile(appContext, clean)
+                    val result = GoogleTtsApi.synthesize(appContext, clean)
+                    audioFile = result.file
+                    if (audioFile == null) {
+                        failureReason = "Voice not downloaded & Google TTS: ${result.error ?: "failed"}"
+                    }
                 } else {
                     try {
                         liveSynthesisActive.set(true)
@@ -269,12 +286,20 @@ class PiperNarrationEngine(
                             NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
                         } else {
                             NarrationDiag.log(appContext, "piper: synth null/slow -> fallback Google TTS")
-                            audioFile = GoogleTtsApi.synthesizeToFile(appContext, clean)
+                            val result = GoogleTtsApi.synthesize(appContext, clean)
+                            audioFile = result.file
+                            if (audioFile == null) {
+                                failureReason = "Piper null & Google TTS: ${result.error ?: "failed"}"
+                            }
                         }
                     } catch (t: Throwable) {
                         Log.e(TAG, "Piper live synthesis error, falling back: ${t.message}", t)
                         NarrationDiag.log(appContext, "piper: err -> fallback Google TTS")
-                        audioFile = GoogleTtsApi.synthesizeToFile(appContext, clean)
+                        val result = GoogleTtsApi.synthesize(appContext, clean)
+                        audioFile = result.file
+                        if (audioFile == null) {
+                            failureReason = "Piper ${t.javaClass.simpleName} & Google TTS: ${result.error ?: "failed"}"
+                        }
                     } finally {
                         liveSynthesisActive.set(false)
                     }
@@ -294,13 +319,16 @@ class PiperNarrationEngine(
                         file = audioFile,
                         speechRate = rate,
                         isTimeStretched = usedOfflinePiper,
-                        targetDurationMs = targetDurationMs
+                        targetDurationMs = targetDurationMs,
+                        text = clean,
+                        ratePercent = ratePercent,
                     )
                 )
                 onResult?.invoke(true, "synth_ok")
             } else {
-                NarrationDiag.log(appContext, "piper: all synth paths failed for len=${clean.length}")
-                mainHandler.post { if (!released) onError(clean, ratePercent) }
+                val detail = failureReason ?: "all synth paths failed"
+                NarrationDiag.log(appContext, "piper: $detail for len=${clean.length}")
+                mainHandler.post { if (!released) onError(clean, ratePercent, detail) }
                 onResult?.invoke(false, "synth_failed")
             }
         }
