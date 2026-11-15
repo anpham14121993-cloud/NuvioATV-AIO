@@ -53,7 +53,7 @@ import com.nuvio.tv.ui.v2.components.NuvioSideSheet
 internal fun PlayerNarrationDialog(
     narrationEnabled: Boolean,
     subtitleMode: String,
-    currentVoice: String = "Ban Mai",
+    currentVoice: String = "Google TTS (Mặc định)",
     engineStatus: NarrationEngineStatus = NarrationEngineStatus.LOADING,
     lastCue: String? = null,
     lastError: String? = null,

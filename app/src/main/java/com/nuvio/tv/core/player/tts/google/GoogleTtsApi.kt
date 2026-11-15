@@ -21,8 +21,9 @@ object GoogleTtsApi {
     private const val MAX_CHUNK_CHARS = 190
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -66,6 +67,7 @@ object GoogleTtsApi {
         val chunks = splitText(clean)
 
         return try {
+            var ok = true
             FileOutputStream(destFile).use { outStream ->
                 for (chunk in chunks) {
                     if (chunk.isBlank()) continue
@@ -79,20 +81,21 @@ object GoogleTtsApi {
                     httpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
                             Log.w(TAG, "Google TTS chunk HTTP error ${response.code} for: $chunk")
-                            return null
+                            ok = false
+                            return@use
                         }
-                        val body = response.body ?: return null
-                        body.byteStream().use { input ->
+                        response.body.byteStream().use { input ->
                             input.copyTo(outStream)
                         }
                     }
+                    if (!ok) break
                 }
             }
 
-            if (destFile.exists() && destFile.length() > 0) {
+            if (ok && destFile.exists() && destFile.length() > 44L) {
                 destFile
             } else {
-                destFile.delete()
+                runCatching { destFile.delete() }
                 null
             }
         } catch (t: Throwable) {

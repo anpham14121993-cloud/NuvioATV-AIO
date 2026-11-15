@@ -131,7 +131,7 @@ data class PlayerUiState(
     // Offline Vietnamese narration (VieNeu TTS).
     val narrationEnabled: Boolean = false,
     val narrationSubtitleMode: String = com.nuvio.tv.data.local.NarrationSubtitleMode.SHOW,
-    val narrationVoice: String = "Ban Mai",
+    val narrationVoice: String = "Google TTS (Mặc định)",
     val showNarrationDialog: Boolean = false,
     val narrationEngineStatus: com.nuvio.tv.core.player.tts.NarrationEngineStatus =
         com.nuvio.tv.core.player.tts.NarrationEngineStatus.LOADING,

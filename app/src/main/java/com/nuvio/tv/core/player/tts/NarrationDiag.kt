@@ -3,6 +3,7 @@ package com.nuvio.tv.core.player.tts
 import android.content.Context
 import android.os.Debug
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Narration diagnostics that survive a process death.
@@ -126,11 +127,15 @@ object NarrationDiag {
      */
     fun captureLogcatBlocking(context: Context) {
         runCatching {
-            val process = ProcessBuilder("/system/bin/logcat", "-d", "-v", "threadtime", "-t", "3000")
+            val process = ProcessBuilder("/system/bin/logcat", "-d", "-v", "threadtime", "-t", "500")
                 .redirectErrorStream(true)
                 .start()
             val lines = process.inputStream.bufferedReader().use { it.readLines() }
-            runCatching { process.waitFor() }
+            runCatching {
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                }
+            }
             val keys = listOf(
                 "Fatal signal", "SIGSEGV", "SIGILL", "SIGABRT", "SIGBUS", "backtrace",
                 "onnxruntime", "vieneu", "Vieneu", "libsea_g2p", "libg2p",

@@ -36,7 +36,7 @@ fun NuvioSideSheet(
     LaunchedEffect(Unit) {
         if (!requestInitialFocus) return@LaunchedEffect
         repeat(2) { withFrameNanos { } }
-        focus.requestFocus()
+        runCatching { focus.requestFocus() }
     }
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f))

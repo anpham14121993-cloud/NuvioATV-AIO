@@ -170,7 +170,7 @@ internal fun PlayerRuntimeController.startSidecarAddonSubtitle(
 
             sidecarTimedCues = parseResult.cues
             val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
-            prefetchUpcomingSidecarCues(parseResult.cues, startPosUs, count = 100)
+            prefetchUpcomingSidecarCues(parseResult.cues, startPosUs, count = 20)
             Log.d(
                 PlayerRuntimeController.TAG,
                 "Sidecar subtitle ready id=${subtitle.id} cues=${parseResult.cues.size} " +
@@ -232,7 +232,7 @@ internal fun PlayerRuntimeController.commitPreparedSidecarSubtitle(
     val committedGeneration = activeSidecarGeneration
     sidecarTimedCues = cues
     val startPosUs = (_exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L) * 1_000L
-    prefetchUpcomingSidecarCues(cues, startPosUs, count = 100)
+    prefetchUpcomingSidecarCues(cues, startPosUs, count = 20)
     lastSidecarCueSignature = null
     lastNarratedCueStartTimeUs = -1L
     postToSubtitleView { view ->
@@ -470,33 +470,46 @@ internal fun PlayerRuntimeController.prefetchUpcomingSidecarCues(
     if (cues.isEmpty()) return
     val prefetchHorizonUs = positionUs + 60_000_000L // 60 seconds rolling horizon
     var prefetched = 0
-    var lastStartUs = -1L
-    for (entry in cues) {
-        if (entry.startTimeUs in positionUs..prefetchHorizonUs) {
-            if (entry.startTimeUs == lastStartUs) continue
-            lastStartUs = entry.startTimeUs
-            val sameTimeCues = cues.filter { it.startTimeUs == entry.startTimeUs }
-            val upcomingText = sameTimeCues.flatMap { it.cues }
-                .joinToString(" ") { it.text?.toString() ?: "" }
-                .trim()
-            if (upcomingText.isNotEmpty()) {
-                val nextCue = cues.firstOrNull { it.startTimeUs > entry.startTimeUs }
-                val naturalDurationUs = when {
-                    entry.durationUs != C.TIME_UNSET && entry.durationUs > 0 -> entry.durationUs
-                    entry.endTimeUs != C.TIME_UNSET && entry.endTimeUs > entry.startTimeUs -> entry.endTimeUs - entry.startTimeUs
-                    else -> 2_500_000L
+    var i = 0
+    while (i < cues.size && cues[i].startTimeUs < positionUs) {
+        i++
+    }
+    while (i < cues.size && prefetched < count) {
+        val entry = cues[i]
+        val startUs = entry.startTimeUs
+        if (startUs > prefetchHorizonUs) break
+        var endSame = i + 1
+        while (endSame < cues.size && cues[endSame].startTimeUs == startUs) {
+            endSame++
+        }
+        val sb = StringBuilder()
+        for (j in i until endSame) {
+            for (cue in cues[j].cues) {
+                val t = cue.text?.toString()?.trim()
+                if (!t.isNullOrEmpty()) {
+                    if (sb.isNotEmpty()) sb.append(' ')
+                    sb.append(t)
                 }
-                val windowSec = if (nextCue != null) {
-                    val gapUs = nextCue.startTimeUs - entry.startTimeUs - 100_000L
-                    (gapUs.coerceAtLeast(naturalDurationUs) / 1_000_000f).coerceIn(1.0f, 7.0f)
-                } else {
-                    (naturalDurationUs / 1_000_000f).coerceIn(1.0f, 7.0f)
-                }
-                nController.prefetch(upcomingText, windowSec = windowSec, targetRam = true)
-                prefetched++
-                if (prefetched >= count) break
             }
         }
+        val upcomingText = sb.toString()
+        if (upcomingText.isNotEmpty()) {
+            val nextCue = if (endSame < cues.size) cues[endSame] else null
+            val naturalDurationUs = when {
+                entry.durationUs != C.TIME_UNSET && entry.durationUs > 0 -> entry.durationUs
+                entry.endTimeUs != C.TIME_UNSET && entry.endTimeUs > startUs -> entry.endTimeUs - startUs
+                else -> 2_500_000L
+            }
+            val windowSec = if (nextCue != null) {
+                val gapUs = nextCue.startTimeUs - startUs - 100_000L
+                (gapUs.coerceAtLeast(naturalDurationUs) / 1_000_000f).coerceIn(1.0f, 7.0f)
+            } else {
+                (naturalDurationUs / 1_000_000f).coerceIn(1.0f, 7.0f)
+            }
+            nController.prefetch(upcomingText, windowSec = windowSec, targetRam = true)
+            prefetched++
+        }
+        i = endSame
     }
 }
 

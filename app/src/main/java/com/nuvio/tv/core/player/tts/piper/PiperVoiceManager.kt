@@ -18,6 +18,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Manages downloading, deleting, checking, and audio previewing of Vietnamese TTS voices.
@@ -44,6 +45,7 @@ object PiperVoiceManager {
     @Volatile
     private var activeAfd: AssetFileDescriptor? = null
     private val previewLock = Any()
+    private val previewSeq = AtomicInteger(0)
 
     fun getModelsDir(context: Context): File {
         return File(context.filesDir, "piper_models").apply { mkdirs() }
@@ -177,13 +179,14 @@ object PiperVoiceManager {
         onPlaybackEnded: () -> Unit = {}
     ): Boolean {
         stopVoicePreview()
+        val seq = previewSeq.get()
 
         val previewDir = File(context.cacheDir, "piper_previews").apply { mkdirs() }
 
         if (PiperVoiceCatalog.isOnlineVoice(voiceId)) {
             val previewFile = File(previewDir, "sample_google_tts.mp3")
             if (previewFile.exists() && previewFile.length() > 1000L) {
-                return startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
+                return startMediaPlayer(previewFile, voiceId, seq, onPlaybackStarted, onPlaybackEnded)
             }
             onPlaybackStarted()
             previewExecutor.execute {
@@ -193,8 +196,16 @@ object PiperVoiceManager {
                         synth.copyTo(previewFile, overwrite = true)
                         synth.delete()
                     }
+                    if (previewSeq.get() != seq) {
+                        mainHandler.post { onPlaybackEnded() }
+                        return@execute
+                    }
                     mainHandler.post {
-                        startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
+                        if (previewSeq.get() == seq) {
+                            startMediaPlayer(previewFile, voiceId, seq, onPlaybackStarted, onPlaybackEnded)
+                        } else {
+                            onPlaybackEnded()
+                        }
                     }
                 } else {
                     mainHandler.post { onPlaybackEnded() }
@@ -216,7 +227,7 @@ object PiperVoiceManager {
         }
 
         if (previewFile.exists() && previewFile.length() > 44L) {
-            return startMediaPlayer(previewFile, voiceId, onPlaybackStarted, onPlaybackEnded)
+            return startMediaPlayer(previewFile, voiceId, seq, onPlaybackStarted, onPlaybackEnded)
         } else {
             Log.w(TAG, "Preview sample not found for $voiceId in assets")
             return false
@@ -226,11 +237,13 @@ object PiperVoiceManager {
     private fun startMediaPlayer(
         file: File,
         voiceId: String,
+        seq: Int,
         onPlaybackStarted: () -> Unit,
         onPlaybackEnded: () -> Unit
     ): Boolean {
         synchronized(previewLock) {
-            stopVoicePreview()
+            if (previewSeq.get() != seq) return false
+            releaseActivePreviewLocked()
             return try {
                 val player = MediaPlayer().apply {
                     setAudioAttributes(
@@ -242,13 +255,17 @@ object PiperVoiceManager {
                     setDataSource(file.absolutePath)
                     setVolume(1.0f, 1.0f)
                     setOnCompletionListener {
-                        stopVoicePreview()
-                        mainHandler.post { onPlaybackEnded() }
+                        runCatching {
+                            stopVoicePreview()
+                            mainHandler.post { onPlaybackEnded() }
+                        }
                     }
                     setOnErrorListener { _, what, extra ->
                         Log.w(TAG, "Preview MediaPlayer error for $voiceId: what=$what extra=$extra")
-                        stopVoicePreview()
-                        mainHandler.post { onPlaybackEnded() }
+                        runCatching {
+                            stopVoicePreview()
+                            mainHandler.post { onPlaybackEnded() }
+                        }
                         true
                     }
                     prepare()
@@ -266,17 +283,21 @@ object PiperVoiceManager {
         }
     }
 
+    private fun releaseActivePreviewLocked() {
+        val player = activePreviewPlayer
+        activePreviewPlayer = null
+        runCatching { player?.setOnCompletionListener(null) }
+        runCatching { player?.setOnErrorListener(null) }
+        runCatching { player?.reset() }
+        runCatching { player?.release() }
+        runCatching { activeAfd?.close() }
+        activeAfd = null
+    }
+
     fun stopVoicePreview() {
+        previewSeq.incrementAndGet()
         synchronized(previewLock) {
-            runCatching {
-                activePreviewPlayer?.stop()
-                activePreviewPlayer?.release()
-            }
-            activePreviewPlayer = null
-            runCatching {
-                activeAfd?.close()
-            }
-            activeAfd = null
+            releaseActivePreviewLocked()
         }
     }
 }

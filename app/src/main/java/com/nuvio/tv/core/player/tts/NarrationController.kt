@@ -34,8 +34,12 @@ class NarrationController(
     var systemTtsStatus: SystemTtsStatus = SystemTtsStatus.UNKNOWN
         private set
 
+    @Volatile
     private var engine: NarrationTtsEngine? = null
+    @Volatile
     private var triedCreateEngine = false
+    private val engineLock = Any()
+    private val cueLock = Any()
 
     @Volatile
     var narrationVoice: String = "Google TTS (Mặc định)"
@@ -69,9 +73,12 @@ class NarrationController(
     private var lastCueAtMs = 0L
     private var cueIntervalEmaMs = 0f
 
+    @Volatile
     private var engineWarmedUp = false
 
+    @Volatile
     private var tts: TextToSpeech? = null
+    @Volatile
     private var released = false
 
     private val mainHandler = Handler(appContext.mainLooper)
@@ -100,21 +107,26 @@ class NarrationController(
     }
 
     private fun engineOrCreate(): NarrationTtsEngine? {
+        if (released) return null
         engine?.let { return it }
-        if (triedCreateEngine) return null
-        triedCreateEngine = true
-        return runCatching {
-            NarrationDiag.log(appContext, "ctrl: create piper offline narration engine")
-            NarrationEngineFactory.create(
-                context = appContext,
-                onSpeechStart = { notifySpeechStart() },
-                onSpeechEnd = { notifySpeechEnd() },
-                onError = { failedText, failedRate -> handleFallbackSpeak(failedText, failedRate) },
-                onStatus = { state -> status.value = state },
-            )
-        }.onFailure {
-            NarrationDiag.log(appContext, "ctrl: engine create failed ${it.javaClass.simpleName}")
-        }.getOrNull().also { engine = it }
+        synchronized(engineLock) {
+            if (released) return null
+            engine?.let { return it }
+            if (triedCreateEngine) return null
+            triedCreateEngine = true
+            return runCatching {
+                NarrationDiag.log(appContext, "ctrl: create piper offline narration engine")
+                NarrationEngineFactory.create(
+                    context = appContext,
+                    onSpeechStart = { notifySpeechStart() },
+                    onSpeechEnd = { notifySpeechEnd() },
+                    onError = { failedText, failedRate -> handleFallbackSpeak(failedText, failedRate) },
+                    onStatus = { state -> status.value = state },
+                )
+            }.onFailure {
+                NarrationDiag.log(appContext, "ctrl: engine create failed ${it.javaClass.simpleName}")
+            }.getOrNull().also { engine = it }
+        }
     }
 
     fun start() {
@@ -203,30 +215,35 @@ class NarrationController(
         if (!enabled || released) return
         val text = cleanText(rawText) ?: return
         lastCue.value = text
-        val now = SystemClock.uptimeMillis()
-        if (text == lastSpokenText && (now - lastSpokenTimeMs) < 1500L) return
         if (!shouldNarrateText(text)) return
 
-        val previousCueAt = lastCueAtMs
-        lastCueAtMs = now
-        lastSpokenText = text
-        lastSpokenTimeMs = now
-        if (previousCueAt > 0L) {
-            val deltaMs = (now - previousCueAt).toFloat()
-            if (deltaMs in 400f..15000f) {
-                cueIntervalEmaMs = if (cueIntervalEmaMs <= 0f) {
-                    deltaMs
-                } else {
-                    cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * NarrationController.CUE_INTERVAL_EMA_ALPHA
+        val effectiveWindow: Float?
+        val budgetMs: Long?
+        synchronized(cueLock) {
+            if (!enabled || released) return
+            val now = SystemClock.uptimeMillis()
+            if (text == lastSpokenText && (now - lastSpokenTimeMs) < 1500L) return
+
+            val previousCueAt = lastCueAtMs
+            lastCueAtMs = now
+            lastSpokenText = text
+            lastSpokenTimeMs = now
+            if (previousCueAt > 0L) {
+                val deltaMs = (now - previousCueAt).toFloat()
+                if (deltaMs in 400f..15000f) {
+                    cueIntervalEmaMs = if (cueIntervalEmaMs <= 0f) {
+                        deltaMs
+                    } else {
+                        cueIntervalEmaMs + (deltaMs - cueIntervalEmaMs) * NarrationController.CUE_INTERVAL_EMA_ALPHA
+                    }
                 }
             }
-        }
-        lastSpokenText = text
-        val effectiveWindow = windowSec ?: cueIntervalEmaMs
-            .takeIf { it > 0f }
-            ?.let { it / 1000f }
-        val budgetMs = effectiveWindow?.let { sec ->
-            ((sec * 1000f).toLong() - NarrationController.NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
+            effectiveWindow = windowSec ?: cueIntervalEmaMs
+                .takeIf { it > 0f }
+                ?.let { it / 1000f }
+            budgetMs = effectiveWindow?.let { sec ->
+                ((sec * 1000f).toLong() - NarrationController.NEXT_CUE_GUARD_MS).coerceAtLeast(150L)
+            }
         }
         speakResolved(text, effectiveWindow, budgetMs, cutOnNewer = true)
     }
@@ -237,7 +254,7 @@ class NarrationController(
         warmUpEngine()
         val e = engineOrCreate() ?: return
         val rate = chooseRatePercent(clean.length, windowSec)
-        e.prefetch(clean, narrationVoice, rate, targetRam)
+        runCatching { e.prefetch(clean, narrationVoice, rate, targetRam) }
     }
 
     fun clearPrefetchQueue() {
@@ -326,6 +343,7 @@ class NarrationController(
     }
 
     private fun notifySpeechStart() {
+        if (released || !enabled) return
         speaking.set(true)
         duckPlayer()
     }
@@ -365,9 +383,12 @@ class NarrationController(
         NarrationDiag.log(appContext, "ctrl: release")
         released = true
         enabled = false
-        val e = engine
-        engine = null
-        triedCreateEngine = false
+        val e = synchronized(engineLock) {
+            val prev = engine
+            engine = null
+            triedCreateEngine = false
+            prev
+        }
         runCatching { e?.release() }
         runCatching { tts?.stop() }
         runCatching { tts?.shutdown() }

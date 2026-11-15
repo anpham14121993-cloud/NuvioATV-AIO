@@ -4,11 +4,12 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.audiofx.LoudnessEnhancer
+import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -21,15 +22,11 @@ data class QueuedTtsAudio(
 )
 
 /**
- * Non-blocking audio player queue directly matching Vax k26 / TtsAudioPlayerQueue.
+ * Non-blocking audio player queue for TTS narration playback.
  *
- * Features:
- * - Plays queued audio files seamlessly with MediaPlayer on STREAM_MUSIC (USAGE_MEDIA).
- * - Dynamic catch-up playback rate:
- *     If queue size >= 2: increases MediaPlayer speed (up to 1.6x) so dialogue never lags.
- *     If queue size == 1: slight speed bump (1.08x).
- * - LoudnessEnhancer integration: boosts narration volume above movie explosions when volume > 1.0.
- * - Automatic file cleanup on completion.
+ * Runs all MediaPlayer operations sequentially on a dedicated [HandlerThread]
+ * so slow TV box audio HAL binder calls never block the UI thread and async
+ * prepare/completion callbacks cannot race with stop/release.
  */
 class TtsAudioPlayerQueue(
     private val context: Context,
@@ -41,10 +38,21 @@ class TtsAudioPlayerQueue(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val playerThread = HandlerThread("nuvio-tts-player").apply { start() }
+    private val playerHandler = Handler(playerThread.looper)
     private val queue = ConcurrentLinkedQueue<QueuedTtsAudio>()
 
+    @Volatile
     private var activePlayer: MediaPlayer? = null
+
+    @Volatile
     private var activeEnhancer: LoudnessEnhancer? = null
+
+    @Volatile
+    private var released = false
+
+    // Accessed only on playerHandler.
+    private var reportedSpeaking = false
 
     @Volatile
     var isPlaying: Boolean = false
@@ -61,29 +69,48 @@ class TtsAudioPlayerQueue(
         private set
 
     fun enqueue(audio: QueuedTtsAudio) {
-        if (!audio.file.exists() || audio.file.length() <= 44L) {
+        if (released || !audio.file.exists() || audio.file.length() <= 44L) {
             runCatching { audio.file.delete() }
             return
         }
         queue.add(audio)
-        mainHandler.post {
-            if (!isPlaying) {
+        playerHandler.post {
+            if (!released && !isPlaying) {
                 playNext()
             }
         }
     }
 
+    private fun notifySpeechStartIfNeeded() {
+        if (!reportedSpeaking && !released) {
+            reportedSpeaking = true
+            mainHandler.post {
+                if (!released) onSpeechStart()
+            }
+        }
+    }
+
+    private fun notifySpeechEndIfNeeded() {
+        if (reportedSpeaking) {
+            reportedSpeaking = false
+            mainHandler.post { onSpeechEnd() }
+        }
+    }
+
+    private fun clearQueueFiles() {
+        while (true) {
+            val item = queue.poll() ?: break
+            runCatching { item.file.delete() }
+        }
+    }
+
     private fun safeReleasePlayer(player: MediaPlayer?) {
         if (player == null) return
-        try {
-            player.setOnCompletionListener(null)
-            player.setOnErrorListener(null)
-            player.setOnPreparedListener(null)
-            player.reset()
-            player.release()
-        } catch (t: Throwable) {
-            Log.w(TAG, "Error releasing MediaPlayer: ${t.message}")
-        }
+        runCatching { player.setOnCompletionListener(null) }
+        runCatching { player.setOnErrorListener(null) }
+        runCatching { player.setOnPreparedListener(null) }
+        runCatching { player.reset() }
+        runCatching { player.release() }
     }
 
     private fun safeReleaseEnhancer() {
@@ -97,11 +124,27 @@ class TtsAudioPlayerQueue(
         }
     }
 
+    private fun finishActiveItem(mp: MediaPlayer?, file: File) {
+        safeReleaseEnhancer()
+        if (mp != null && activePlayer === mp) {
+            activePlayer = null
+        }
+        safeReleasePlayer(mp)
+        runCatching { file.delete() }
+        isPlaying = false
+        if (!released) {
+            playerHandler.post { playNext() }
+        } else {
+            notifySpeechEndIfNeeded()
+        }
+    }
+
     private fun playNext() {
-        if (queue.isEmpty()) {
+        if (released) {
+            clearQueueFiles()
             isPlaying = false
             currentSpeed = 1.0f
-            onSpeechEnd()
+            notifySpeechEndIfNeeded()
             return
         }
 
@@ -109,7 +152,7 @@ class TtsAudioPlayerQueue(
         if (item == null) {
             isPlaying = false
             currentSpeed = 1.0f
-            onSpeechEnd()
+            notifySpeechEndIfNeeded()
             return
         }
 
@@ -121,12 +164,22 @@ class TtsAudioPlayerQueue(
         }
 
         isPlaying = true
-        onSpeechStart()
+        notifySpeechStartIfNeeded()
 
-        safeReleasePlayer(activePlayer)
         safeReleaseEnhancer()
+        val prevPlayer = activePlayer
+        activePlayer = null
+        safeReleasePlayer(prevPlayer)
 
-        val player = MediaPlayer()
+        val player = try {
+            MediaPlayer()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to create MediaPlayer: ${t.message}", t)
+            runCatching { file.delete() }
+            isPlaying = false
+            playerHandler.post { playNext() }
+            return
+        }
         activePlayer = player
 
         try {
@@ -137,115 +190,119 @@ class TtsAudioPlayerQueue(
                     .build()
             )
 
-            FileInputStream(file).use { fis ->
-                player.setDataSource(fis.fd)
-            }
+            // Use file path directly: passing a FileInputStream FD closed before
+            // prepareAsync() causes decode failures on Android TV boxes.
+            player.setDataSource(file.absolutePath)
 
             player.setOnCompletionListener { mp ->
-                safeReleaseEnhancer()
-                if (activePlayer == mp) {
-                    activePlayer = null
-                }
-                safeReleasePlayer(mp)
-                runCatching { file.delete() }
-                mainHandler.post { playNext() }
+                runCatching { finishActiveItem(mp, file) }
             }
 
             player.setOnErrorListener { mp, what, extra ->
                 Log.w(TAG, "MediaPlayer error: what=$what extra=$extra for file=${file.name}")
-                safeReleaseEnhancer()
-                if (activePlayer == mp) {
-                    activePlayer = null
-                }
-                safeReleasePlayer(mp)
-                runCatching { file.delete() }
-                mainHandler.post { playNext() }
+                runCatching { finishActiveItem(mp, file) }
                 true
             }
 
             player.setOnPreparedListener { mp ->
-                val vol = volumeMultiplier.coerceIn(0f, 1.5f)
-                val baseVol = vol.coerceAtMost(1.0f)
-                mp.setVolume(baseVol, baseVol)
-                mp.start()
-
-                // Calculate dynamic playback speed matching Vax k26 logic
+                if (released || activePlayer !== mp) {
+                    safeReleasePlayer(mp)
+                    runCatching { file.delete() }
+                    return@setOnPreparedListener
+                }
                 try {
-                    val durationMs = runCatching { mp.duration.toLong() }.getOrDefault(-1L)
-                    val effectiveDuration = if (item.wavDurationMs > 0) item.wavDurationMs else durationMs
-                    val maxSpeed = if (effectiveDuration >= 3000L) 1.5f else 1.6f
+                    val vol = volumeMultiplier.coerceIn(0f, 1.5f)
+                    val baseVol = vol.coerceAtMost(1.0f)
+                    mp.setVolume(baseVol, baseVol)
+                    mp.start()
 
-                    var calcSpeed = item.speechRate.coerceIn(0.95f, maxSpeed)
-                    if (effectiveDuration > 0 && item.targetDurationMs > 0) {
-                        val target = if (effectiveDuration >= 3000L) item.targetDurationMs + 220L else item.targetDurationMs
-                        val ratio = effectiveDuration.toFloat() / target.toFloat()
-                        if (ratio > calcSpeed) {
-                            calcSpeed = ratio
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            val durationMs = runCatching { mp.duration.toLong() }.getOrDefault(-1L)
+                            val effectiveDuration = if (item.wavDurationMs > 0) item.wavDurationMs else durationMs
+                            val maxSpeed = if (effectiveDuration >= 3000L) 1.45f else 1.50f
+
+                            var calcSpeed = item.speechRate.coerceIn(0.95f, maxSpeed)
+                            if (effectiveDuration > 0 && item.targetDurationMs > 0) {
+                                val target = if (effectiveDuration >= 3000L) item.targetDurationMs + 220L else item.targetDurationMs
+                                val ratio = effectiveDuration.toFloat() / target.toFloat()
+                                if (ratio > calcSpeed) {
+                                    calcSpeed = ratio
+                                }
+                            }
+
+                            val backlogSize = queue.size
+                            if (backlogSize >= 2) {
+                                calcSpeed = maxOf((((backlogSize - 1) * 0.1f) + 1.0f) * calcSpeed, 1.25f)
+                            } else if (backlogSize == 1) {
+                                calcSpeed = (calcSpeed * 1.06f).coerceAtMost(maxSpeed)
+                            }
+
+                            currentSpeed = calcSpeed.coerceIn(0.95f, maxSpeed)
+                            if (kotlin.math.abs(currentSpeed - 1.0f) > 0.02f) {
+                                mp.playbackParams = mp.playbackParams.setSpeed(currentSpeed)
+                            }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Could not set playbackParams speed: ${t.message}")
                         }
                     }
 
-                    // Vax backlog catch-up:
-                    val backlogSize = queue.size
-                    if (backlogSize >= 2) {
-                        calcSpeed = Math.max((((backlogSize - 1) * 0.1f) + 1.0f) * calcSpeed, 1.3f)
-                    } else if (backlogSize == 1) {
-                        calcSpeed = (calcSpeed * 1.08f).coerceAtMost(maxSpeed)
+                    if (vol > 1.0f) {
+                        try {
+                            val enhancer = LoudnessEnhancer(mp.audioSessionId)
+                            enhancer.setTargetGain(((vol - 1.0f) * 2800f).toInt())
+                            enhancer.enabled = true
+                            activeEnhancer = enhancer
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Could not enable LoudnessEnhancer: ${t.message}")
+                        }
                     }
-
-                    currentSpeed = calcSpeed.coerceIn(0.95f, maxSpeed)
-                    mp.playbackParams = mp.playbackParams.setSpeed(currentSpeed)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not set playbackParams speed: ${e.message}")
-                }
-
-                // Vax LoudnessEnhancer: boost audio if volume > 1.0
-                if (vol > 1.0f) {
-                    try {
-                        val enhancer = LoudnessEnhancer(mp.audioSessionId)
-                        enhancer.setTargetGain(((vol - 1.0f) * 2800f).toInt())
-                        enhancer.enabled = true
-                        activeEnhancer = enhancer
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not enable LoudnessEnhancer: ${e.message}")
-                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to start MediaPlayer onPrepared for ${file.name}: ${t.message}", t)
+                    finishActiveItem(mp, file)
                 }
             }
 
             player.prepareAsync()
-        } catch (e: Exception) {
-            if (e is FileNotFoundException) {
+        } catch (t: Throwable) {
+            if (t is FileNotFoundException) {
                 Log.w(TAG, "File not found: ${file.name}")
             } else {
-                Log.e(TAG, "Failed to start MediaPlayer for ${file.name}", e)
+                Log.e(TAG, "Failed to start MediaPlayer for ${file.name}", t)
             }
-            if (activePlayer == player) {
-                activePlayer = null
-            }
-            safeReleasePlayer(player)
-            safeReleaseEnhancer()
-            runCatching { file.delete() }
-            isPlaying = false
-            mainHandler.post { playNext() }
+            finishActiveItem(player, file)
         }
     }
 
     fun stop() {
-        mainHandler.post {
+        clearQueueFiles()
+        playerHandler.removeCallbacksAndMessages(null)
+        playerHandler.post {
             safeReleaseEnhancer()
             val mp = activePlayer
             activePlayer = null
             safeReleasePlayer(mp)
-            while (true) {
-                val item = queue.poll() ?: break
-                runCatching { item.file.delete() }
-            }
+            clearQueueFiles()
             isPlaying = false
             currentSpeed = 1.0f
-            onSpeechEnd()
+            notifySpeechEndIfNeeded()
         }
     }
 
     fun release() {
-        stop()
+        released = true
+        clearQueueFiles()
+        playerHandler.removeCallbacksAndMessages(null)
+        playerHandler.post {
+            safeReleaseEnhancer()
+            val mp = activePlayer
+            activePlayer = null
+            safeReleasePlayer(mp)
+            clearQueueFiles()
+            isPlaying = false
+            currentSpeed = 1.0f
+            notifySpeechEndIfNeeded()
+            runCatching { playerThread.quitSafely() }
+        }
     }
 }

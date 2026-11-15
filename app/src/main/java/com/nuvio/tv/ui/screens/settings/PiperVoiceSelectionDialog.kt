@@ -57,7 +57,9 @@ import com.nuvio.tv.core.player.tts.piper.PiperVoiceManager
 import com.nuvio.tv.ui.components.NuvioDialog
 import com.nuvio.tv.ui.screens.detail.requestFocusAfterFrames
 import com.nuvio.tv.ui.theme.NuvioTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * TV dialog to browse, preview (listen before downloading), download with live progress,
@@ -93,11 +95,17 @@ fun PiperVoiceSelectionDialog(
     }
 
     LaunchedEffect(Unit) {
-        PiperVoiceCatalog.VOICES.forEach { voice ->
-            val downloaded = PiperVoiceManager.isVoiceDownloaded(context, voice.id)
-            downloadedStates[voice.id] = downloaded
+        val status = withContext(Dispatchers.IO) {
+            PiperVoiceCatalog.VOICES.map { voice ->
+                val downloaded = PiperVoiceManager.isVoiceDownloaded(context, voice.id)
+                val sizeMb = if (downloaded) PiperVoiceManager.getVoiceFileSizeMb(context, voice.id) else 0f
+                Triple(voice.id, downloaded, sizeMb)
+            }
+        }
+        status.forEach { (id, downloaded, sizeMb) ->
+            downloadedStates[id] = downloaded
             if (downloaded) {
-                fileSizes[voice.id] = PiperVoiceManager.getVoiceFileSizeMb(context, voice.id)
+                fileSizes[id] = sizeMb
             }
         }
         firstFocusRequester.requestFocusAfterFrames()

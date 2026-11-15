@@ -12,23 +12,23 @@ import com.nuvio.tv.core.player.tts.piper.PiperPhonemizer
 import com.nuvio.tv.core.player.tts.piper.PiperVoiceCatalog
 import com.nuvio.tv.core.player.tts.piper.PiperVoiceConfig
 import com.nuvio.tv.core.player.tts.piper.PiperVoiceManager
-import okhttp3.OkHttpClient
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import java.security.MessageDigest
+import java.util.LinkedHashMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * High-performance, low-latency Vietnamese narration engine adopting the full Vax architecture.
@@ -55,18 +55,15 @@ class PiperNarrationEngine(
 
     companion object {
         private const val TAG = "PiperNarration"
-        private const val MAX_DISK_CACHE_BYTES = 128L * 1024L * 1024L // 128 MB
-        private const val MAX_RAM_CACHE_ENTRIES = 60
+        private const val MAX_PREFETCH_FILES = 40
     }
 
-    private class InFlightJob {
-        val latch = CountDownLatch(1)
-        @Volatile var audioFile: File? = null
-        @Volatile var audioBytes: ByteArray? = null
-        @Volatile var failed: Boolean = false
-    }
+    private data class PrefetchedAudio(
+        val file: File,
+        val timeStretched: Boolean,
+        val generation: Long,
+    )
 
-    private val inFlightJobs = ConcurrentHashMap<String, InFlightJob>()
     private val prefetchInFlight = ConcurrentHashMap.newKeySet<String>()
 
     // Dedicated single-thread worker for live synthesis to avoid UI stutter
@@ -92,9 +89,16 @@ class PiperNarrationEngine(
         onSpeechEnd = onSpeechEnd,
     )
 
-    // Secondary map from "voiceId:cleanText" -> cacheKey
-    private val textToKeyMap = HashMap<String, String>()
-    private val prefetchedFiles = ConcurrentHashMap<String, File>()
+    private val prefetchLock = Any()
+    private val prefetchedFiles = object : LinkedHashMap<String, PrefetchedAudio>(MAX_PREFETCH_FILES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PrefetchedAudio>?): Boolean {
+            if (size > MAX_PREFETCH_FILES) {
+                eldest?.value?.file?.let { runCatching { it.delete() } }
+                return true
+            }
+            return false
+        }
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val modelsDir = File(appContext.filesDir, "piper_models").apply { mkdirs() }
@@ -103,9 +107,7 @@ class PiperNarrationEngine(
     @Volatile
     private var narrationVolume = 1f
 
-    private val isDownloading = AtomicBoolean(false)
-    private val reqSeq = AtomicInteger(0)
-    private val cancelSeq = AtomicInteger(0)
+    private val cancelSeq = AtomicLong(0L)
     private val liveSynthesisActive = AtomicBoolean(false)
 
     @Volatile
@@ -129,16 +131,44 @@ class PiperNarrationEngine(
         }
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(180, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    private fun executeSafe(executor: ExecutorService, block: () -> Unit): Boolean {
+        if (released || executor.isShutdown || executor.isTerminated) return false
+        return try {
+            executor.execute(block)
+            true
+        } catch (_: RejectedExecutionException) {
+            false
+        }
+    }
+
+    private fun googleSpeechRate(ratePercent: Int): Float {
+        // Piper uses lengthScale on 70..140; map that range gently onto MediaPlayer
+        // speed [1.10x .. 1.40x] so Android TV HAL time-stretchers stay stable.
+        return (1.10f + ((ratePercent - 70).coerceIn(0, 70) / 70f) * 0.30f).coerceIn(1.05f, 1.40f)
+    }
+
+    private fun storePrefetched(textKey: String, entry: PrefetchedAudio): Boolean {
+        if (released || entry.generation != cancelSeq.get() || !entry.file.exists()) {
+            runCatching { entry.file.delete() }
+            return false
+        }
+        synchronized(prefetchLock) {
+            if (released || entry.generation != cancelSeq.get()) {
+                runCatching { entry.file.delete() }
+                return false
+            }
+            val prev = prefetchedFiles.put(textKey, entry)
+            if (prev != null && prev.file != entry.file) {
+                runCatching { prev.file.delete() }
+            }
+        }
+        return true
+    }
 
     override fun warmUp() {
         if (released) return
-        worker.execute {
+        executeSafe(worker) {
+            if (released) return@executeSafe
             onStatus(NarrationEngineStatus.READY)
             NarrationDiag.log(appContext, "piper: ready (vax engine)")
         }
@@ -169,20 +199,19 @@ class PiperNarrationEngine(
             return
         }
 
-        val seq = reqSeq.incrementAndGet()
         val currentCancel = cancelSeq.get()
-        val cacheKey = buildCacheKey(clean, voice.id, ratePercent)
         val textKey = "${voice.id}:$clean"
-        val speechRate = (1.0f + ratePercent / 100f).coerceIn(0.95f, 1.6f)
         val targetDurationMs = budgetMs ?: -1L
 
         // 1. Check Prefetched Disk Cache First (0ms instant playback)
-        val prefetched = prefetchedFiles.remove(textKey)
-        if (prefetched != null && prefetched.exists() && prefetched.length() > 44L) {
+        val prefetched = synchronized(prefetchLock) { prefetchedFiles.remove(textKey) }
+        if (prefetched != null && prefetched.file.exists() && prefetched.file.length() > 44L) {
+            val rate = if (prefetched.timeStretched) 1.0f else googleSpeechRate(ratePercent)
             audioQueue.enqueue(
                 QueuedTtsAudio(
-                    file = prefetched,
-                    speechRate = speechRate,
+                    file = prefetched.file,
+                    speechRate = rate,
+                    isTimeStretched = prefetched.timeStretched,
                     targetDurationMs = targetDurationMs
                 )
             )
@@ -191,13 +220,14 @@ class PiperNarrationEngine(
         }
 
         // 2. Synthesize via Worker
-        worker.execute {
+        val scheduled = executeSafe(worker) {
             if (released || currentCancel != cancelSeq.get()) {
                 onResult?.invoke(false, "superseded")
-                return@execute
+                return@executeSafe
             }
 
             var audioFile: File? = null
+            var usedOfflinePiper = false
 
             // A. If Online Google TTS is selected (Vax Default):
             if (PiperVoiceCatalog.isOnlineVoice(voice.id)) {
@@ -235,6 +265,7 @@ class PiperNarrationEngine(
                             val f = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
                             FileOutputStream(f).use { it.write(bytes) }
                             audioFile = f
+                            usedOfflinePiper = true
                             NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
                         } else {
                             NarrationDiag.log(appContext, "piper: synth null/slow -> fallback Google TTS")
@@ -253,23 +284,28 @@ class PiperNarrationEngine(
             if (released || currentCancel != cancelSeq.get()) {
                 runCatching { audioFile?.delete() }
                 onResult?.invoke(false, "superseded")
-                return@execute
+                return@executeSafe
             }
 
             if (audioFile != null && audioFile.exists() && audioFile.length() > 44L) {
+                val rate = if (usedOfflinePiper) 1.0f else googleSpeechRate(ratePercent)
                 audioQueue.enqueue(
                     QueuedTtsAudio(
                         file = audioFile,
-                        speechRate = speechRate,
+                        speechRate = rate,
+                        isTimeStretched = usedOfflinePiper,
                         targetDurationMs = targetDurationMs
                     )
                 )
                 onResult?.invoke(true, "synth_ok")
             } else {
                 NarrationDiag.log(appContext, "piper: all synth paths failed for len=${clean.length}")
-                mainHandler.post { onError(clean, ratePercent) }
+                mainHandler.post { if (!released) onError(clean, ratePercent) }
                 onResult?.invoke(false, "synth_failed")
             }
+        }
+        if (!scheduled) {
+            onResult?.invoke(false, "released")
         }
     }
 
@@ -280,33 +316,34 @@ class PiperNarrationEngine(
         if (clean.isBlank()) return
 
         val textKey = "${voice.id}:$clean"
-        if (prefetchedFiles.containsKey(textKey)) return
+        val alreadyCached = synchronized(prefetchLock) {
+            val existing = prefetchedFiles[textKey]
+            existing != null && existing.file.exists() && existing.file.length() > 44L
+        }
+        if (alreadyCached) return
         if (!prefetchInFlight.add(textKey)) return
 
         val currentCancel = cancelSeq.get()
-        prefetchExecutor.execute {
+        val scheduled = executeSafe(prefetchExecutor) {
             try {
-                if (released || liveSynthesisActive.get() || currentCancel != cancelSeq.get()) return@execute
+                if (released || liveSynthesisActive.get() || currentCancel != cancelSeq.get()) return@executeSafe
 
                 if (PiperVoiceCatalog.isOnlineVoice(voice.id)) {
                     val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
-                    if (file != null && file.exists()) {
-                        prefetchedFiles[textKey] = file
+                    if (file != null) {
+                        storePrefetched(textKey, PrefetchedAudio(file, timeStretched = false, generation = currentCancel))
+                    }
+                } else if (!PiperVoiceManager.isVoiceDownloaded(appContext, voice.id)) {
+                    val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
+                    if (file != null) {
+                        storePrefetched(textKey, PrefetchedAudio(file, timeStretched = false, generation = currentCancel))
                     }
                 } else {
-                    if (!PiperVoiceManager.isVoiceDownloaded(appContext, voice.id)) {
-                        // Prefetch Google TTS fallback
-                        val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
-                        if (file != null && file.exists()) {
-                            prefetchedFiles[textKey] = file
-                        }
-                    } else {
-                        val bytes = doSynthesize(clean, voice.id, ratePercent)
-                        if (bytes != null && bytes.size > 44) {
-                            val f = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
-                            FileOutputStream(f).use { it.write(bytes) }
-                            prefetchedFiles[textKey] = f
-                        }
+                    val bytes = doSynthesize(clean, voice.id, ratePercent)
+                    if (bytes != null && bytes.size > 44) {
+                        val f = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
+                        FileOutputStream(f).use { it.write(bytes) }
+                        storePrefetched(textKey, PrefetchedAudio(f, timeStretched = true, generation = currentCancel))
                     }
                 }
             } catch (t: Throwable) {
@@ -315,14 +352,18 @@ class PiperNarrationEngine(
                 prefetchInFlight.remove(textKey)
             }
         }
+        if (!scheduled) {
+            prefetchInFlight.remove(textKey)
+        }
     }
 
     override fun stop() {
         cancelSeq.incrementAndGet()
         audioQueue.stop()
-        inFlightJobs.clear()
-        prefetchedFiles.values.forEach { runCatching { it.delete() } }
-        prefetchedFiles.clear()
+        synchronized(prefetchLock) {
+            prefetchedFiles.values.forEach { runCatching { it.file.delete() } }
+            prefetchedFiles.clear()
+        }
         clearPrefetchQueue()
     }
 
@@ -331,23 +372,25 @@ class PiperNarrationEngine(
         stop()
         audioQueue.release()
 
-        synchronized(sessionLock) {
-            runCatching { ortSession?.close() }
-            ortSession = null
-            voiceConfig = null
-            currentVoiceId = ""
-        }
-
         runCatching { prefetchQueue.clear() }
         runCatching { prefetchExecutor.shutdownNow() }
         runCatching { worker.shutdownNow() }
 
-        // Clean up temporary tts_cache files
-        try {
-            cacheDir.listFiles()?.forEach { file ->
-                runCatching { file.delete() }
+        // Close ONNX session off the caller/Main thread so ongoing inference cannot block UI teardown.
+        Thread({
+            synchronized(sessionLock) {
+                runCatching { ortSession?.close() }
+                ortSession = null
+                voiceConfig = null
+                currentVoiceId = ""
             }
-        } catch (_: Exception) {}
+            runCatching {
+                cacheDir.listFiles()?.forEach { file -> runCatching { file.delete() } }
+            }
+        }, "nuvio-piper-release").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     override fun clearPrefetchQueue() {
@@ -485,8 +528,9 @@ class PiperNarrationEngine(
     )
 
     private fun ensureModelLoaded(voiceId: String): Pair<OrtSession, PiperVoiceConfig>? {
-        if (PiperVoiceCatalog.isOnlineVoice(voiceId)) return null
+        if (released || PiperVoiceCatalog.isOnlineVoice(voiceId)) return null
         synchronized(sessionLock) {
+            if (released) return null
             if (currentVoiceId == voiceId && ortSession != null && voiceConfig != null) {
                 return Pair(ortSession!!, voiceConfig!!)
             }
@@ -505,13 +549,22 @@ class PiperNarrationEngine(
                 NarrationDiag.log(appContext, "piper: load model $voiceId")
 
                 val config = PiperVoiceConfig.fromFile(configFile)
+                // Keep 32-bit ARMv7 TV-box stability flags (NO_OPT + disabled prepacking /
+                // memory-pattern optimization) so ONNX Runtime does not abort in createSession.
                 val sessionOptions = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(2)
-                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
+                    setInterOpNumThreads(1)
+                    setMemoryPatternOptimization(false)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT)
+                    addConfigEntry("session.disable_prepacking", "1")
                 }
 
-                ortSession?.close()
-                val session = ortEnv.createSession(modelFile.absolutePath, sessionOptions)
+                val session = try {
+                    ortSession?.close()
+                    ortEnv.createSession(modelFile.absolutePath, sessionOptions)
+                } finally {
+                    runCatching { sessionOptions.close() }
+                }
 
                 ortSession = session
                 voiceConfig = config
