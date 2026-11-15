@@ -277,7 +277,8 @@ private fun NarrationDiagText() {
                 val prevLooksCrashed = prev.isNotEmpty() &&
                     prev.lastOrNull()?.contains("ctrl: release") != true
                 val withPrev = if (prevLooksCrashed) {
-                    "== LAN TRUOC ==\n" + prev.asReversed().joinToString("\n") + "\n== HIEN TAI ==\n$stages"
+                    "== HIEN TAI ==\n${stages.ifBlank { "(chua co log phien hien tai)" }}\n== LAN TRUOC ==\n" +
+                        prev.asReversed().take(5).joinToString("\n")
                 } else stages
                 val head = if (timing.isBlank()) "" else "TOC DO: $timing\n"
                 val all = head + withPrev

@@ -359,6 +359,9 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
         cancelTunnelAvSyncWatchdog()
     }
     tryAutoSelectPreferredSubtitleFromAvailableTracks()
+    if (_uiState.value.narrationEnabled) {
+        ensureNarrationSubtitleSelected()
+    }
     maybeAdjustLibassPipelineForTracks(tracks)
 }
 
@@ -431,13 +434,15 @@ internal fun PlayerRuntimeController.maybeAdjustLibassPipelineForTracks(tracks: 
     }
     // Don't rebuild just to drop libass, except when it's holding the MKV extractor on a DV
     // file and blocking conversion; then drop it so the DV extractor runs.
-    val desiredUseLibass = requestedUseLibassByUser && hasDetectedAssSsaTrackForCurrentStream
+    val desiredUseLibass = requestedUseLibassByUser &&
+        hasDetectedAssSsaTrackForCurrentStream &&
+        !_uiState.value.narrationEnabled
     if (desiredUseLibass == activePlayerUsesLibass) return
     if (!desiredUseLibass) {
         val libassBlockingDvConvert = activePlayerUsesLibass &&
                 isExperimentalDv7ToDv81ActiveForCurrentPlayback &&
                 tracks.hasDolbyVisionConvertibleVideoTrack()
-        if (!libassBlockingDvConvert) return
+        if (!libassBlockingDvConvert && !_uiState.value.narrationEnabled) return
     }
 
     val player = _exoPlayer ?: return

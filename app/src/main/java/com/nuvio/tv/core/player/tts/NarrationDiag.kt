@@ -72,6 +72,9 @@ object NarrationDiag {
             if (keep.isNotEmpty()) {
                 prevFile(context).writeText(keep.joinToString("\n", postfix = "\n"))
             }
+            // Start each launch with a clean current-session log so the dialog
+            // is not filled by stale lines from earlier launches.
+            f.writeText("")
         }
     }
 

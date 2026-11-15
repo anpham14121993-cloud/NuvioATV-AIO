@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.player
 
 import android.util.Log
+import com.nuvio.tv.core.player.tts.NarrationDiag
 import com.nuvio.tv.data.local.NarrationSubtitleMode
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -25,6 +26,9 @@ internal fun PlayerRuntimeController.applyNarrationSettings(settings: com.nuvio.
         )
     }
     applyNarrationSubtitleVisibility(settings.ttsNarrationEnabled, settings.ttsNarrationSubtitleMode)
+    if (settings.ttsNarrationEnabled) {
+        ensureNarrationSubtitleSelected()
+    }
 }
 
 /**
@@ -97,6 +101,16 @@ internal fun PlayerRuntimeController.enableNarration(subtitleMode: String) {
     }
     applyNarrationSubtitleVisibility(true, mode)
     ensureNarrationSubtitleSelected()
+    val snapshot = _uiState.value
+    NarrationDiag.log(
+        context,
+        "ui: enable mode=$mode subs=${snapshot.subtitleTracks.size} " +
+            "sel=${snapshot.selectedSubtitleTrackIndex} addon=${snapshot.selectedAddonSubtitle != null} " +
+            "addonsAvail=${snapshot.addonSubtitles.size} libass=$activePlayerUsesLibass"
+    )
+    if (activePlayerUsesLibass && snapshot.selectedAddonSubtitle == null) {
+        _exoPlayer?.currentTracks?.let { maybeAdjustLibassPipelineForTracks(it) }
+    }
 }
 
 /** Turns the narration off and brings the subtitles back. */
@@ -137,15 +151,30 @@ internal fun PlayerRuntimeController.ensureNarrationSubtitleSelected() {
         Log.i(PlayerRuntimeController.TAG, "ensureNarrationSubtitleSelected: no subtitle track available")
         return
     }
-    val preferred = tracks.indexOfFirst { track ->
-        val language = track.language?.lowercase().orEmpty()
-        language.contains("vie") || language.contains("viet")
+    fun isBitmapTrack(track: TrackInfo): Boolean {
+        val c = track.codec?.lowercase().orEmpty()
+        return c.contains("pgs") || c.contains("vobsub") || c.contains("dvb")
     }
-    val index = if (preferred >= 0) preferred else 0
+    fun isVietnamese(track: TrackInfo): Boolean {
+        val language = track.language?.lowercase().orEmpty()
+        val name = track.name.lowercase()
+        return language.contains("vie") || language.contains("viet") ||
+            language == "vi" || name.contains("viet") || name.contains("tiếng việt")
+    }
+    val preferred = tracks.indexOfFirst { !isBitmapTrack(it) && !it.isForced && isVietnamese(it) }
+        .takeIf { it >= 0 }
+        ?: tracks.indexOfFirst { !isBitmapTrack(it) && isVietnamese(it) }.takeIf { it >= 0 }
+        ?: tracks.indexOfFirst { isVietnamese(it) }.takeIf { it >= 0 }
+        ?: tracks.indexOfFirst { !isBitmapTrack(it) }.takeIf { it >= 0 }
+    val index = preferred ?: 0
     Log.i(
         PlayerRuntimeController.TAG,
         "ensureNarrationSubtitleSelected: selecting track $index " +
-            "(${tracks[index].language}/${tracks[index].name})"
+            "(${tracks[index].language}/${tracks[index].name}/${tracks[index].codec})"
+    )
+    NarrationDiag.log(
+        context,
+        "ui: autoSub idx=$index (${tracks[index].language}/${tracks[index].codec})"
     )
     selectSubtitleTrack(index)
 }

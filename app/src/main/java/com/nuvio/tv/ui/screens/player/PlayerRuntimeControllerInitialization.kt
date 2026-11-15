@@ -1018,6 +1018,9 @@ internal fun PlayerRuntimeController.initializePlayer(
             // ── Libass Setup (From 0.5.7-beta/Left) ──
             requestedUseLibassByUser = playerSettings.useLibass
             val useLibass = when {
+                // While narration is enabled, use ExoPlayer's text parser so ASS/SSA
+                // lines are delivered to CueNormalizingTextOutput and honor HIDE mode.
+                _uiState.value.narrationEnabled -> false
                 !requestedUseLibassByUser -> false
                 libassPipelineOverrideForCurrentStream != null -> libassPipelineOverrideForCurrentStream == true
                 else -> true
