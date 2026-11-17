@@ -20,9 +20,11 @@ import java.nio.LongBuffer
 import java.security.MessageDigest
 import java.util.LinkedHashMap
 import java.util.UUID
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
@@ -66,9 +68,14 @@ class PiperNarrationEngine(
 
     private val prefetchInFlight = ConcurrentHashMap.newKeySet<String>()
 
-    // Dedicated single-thread worker for live synthesis to avoid UI stutter
+    // Dedicated single-thread worker for live orchestration so slow ONNX never stalls Google fallback
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "nuvio-piper-worker").apply { isDaemon = true }
+    }
+
+    // Separate single-thread executor for heavy ONNX inference (can take 2-6s on 32-bit TV boxes)
+    private val piperExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "nuvio-piper-onnx").apply { isDaemon = true }
     }
 
     // 1 background prefetch worker with lowest priority so it never starves live playback
@@ -117,6 +124,12 @@ class PiperNarrationEngine(
     private val cancelSeq = AtomicLong(0L)
     private val liveSpeakSeq = AtomicLong(0L)
     private val liveSynthesisActive = AtomicBoolean(false)
+    @Volatile
+    private var slowOfflinePiper = false
+    @Volatile
+    private var slowPiperVoiceId: String = ""
+    @Volatile
+    private var lastInferenceMs: Long = 0L
 
     @Volatile
     private var currentVoiceId: String = ""
@@ -210,6 +223,7 @@ class PiperNarrationEngine(
 
         val currentCancel = cancelSeq.get()
         val mySpeakSeq = if (cutOnNewer) liveSpeakSeq.incrementAndGet() else liveSpeakSeq.get()
+        val speakStartedAt = System.currentTimeMillis()
         val textKey = "${voice.id}:$clean"
         val targetDurationMs = budgetMs ?: -1L
 
@@ -265,49 +279,17 @@ class PiperNarrationEngine(
                     liveSynthesisActive.set(false)
                 }
             } else {
-                // B. Offline Piper Voice Selected:
-                val isDownloaded = PiperVoiceManager.isVoiceDownloaded(appContext, voice.id)
-                if (!isDownloaded) {
-                    // Model not downloaded -> seamlessly fall back to Google TTS
-                    NarrationDiag.log(appContext, "piper: voice ${voice.id} not downloaded -> fallback Google TTS")
-                    val result = GoogleTtsApi.synthesize(appContext, clean)
-                    audioFile = result.file
-                    if (audioFile == null) {
-                        failureReason = "Voice not downloaded & Google TTS: ${result.error ?: "failed"}"
-                    }
-                } else {
-                    try {
-                        liveSynthesisActive.set(true)
-                        val t0 = System.currentTimeMillis()
-                        val bytes = doSynthesize(clean, voice.id, ratePercent)
-                        val took = System.currentTimeMillis() - t0
-
-                        if (bytes != null && bytes.size > 44) {
-                            val f = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
-                            FileOutputStream(f).use { it.write(bytes) }
-                            audioFile = f
-                            usedOfflinePiper = true
-                            NarrationDiag.log(appContext, "piper: synth ok ${bytes.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
-                        } else {
-                            NarrationDiag.log(appContext, "piper: synth null/slow -> fallback Google TTS")
-                            val result = GoogleTtsApi.synthesize(appContext, clean)
-                            audioFile = result.file
-                            if (audioFile == null) {
-                                failureReason = "Piper null & Google TTS: ${result.error ?: "failed"}"
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "Piper live synthesis error, falling back: ${t.message}", t)
-                        NarrationDiag.log(appContext, "piper: err -> fallback Google TTS")
-                        val result = GoogleTtsApi.synthesize(appContext, clean)
-                        audioFile = result.file
-                        if (audioFile == null) {
-                            failureReason = "Piper ${t.javaClass.simpleName} & Google TTS: ${result.error ?: "failed"}"
-                        }
-                    } finally {
-                        liveSynthesisActive.set(false)
-                    }
-                }
+                // B. Offline Piper Voice Selected: auto-fallback to fast Google TTS when TV CPU is slow
+                val outcome = synthesizeOfflineWithRealtimeGuard(
+                    clean = clean,
+                    voiceId = voice.id,
+                    ratePercent = ratePercent,
+                    mySpeakSeq = mySpeakSeq,
+                    currentCancel = currentCancel,
+                )
+                audioFile = outcome.file
+                usedOfflinePiper = outcome.usedOfflinePiper
+                failureReason = outcome.failureReason
             }
 
             if (released || currentCancel != cancelSeq.get() || mySpeakSeq != liveSpeakSeq.get()) {
@@ -318,12 +300,18 @@ class PiperNarrationEngine(
 
             if (audioFile != null && audioFile.exists() && audioFile.length() > 44L) {
                 val rate = if (usedOfflinePiper) 1.0f else googleSpeechRate(ratePercent)
+                val elapsedSynthMs = (System.currentTimeMillis() - speakStartedAt).coerceAtLeast(0L)
+                val adjustedTargetMs = if (targetDurationMs > 0L) {
+                    (targetDurationMs - elapsedSynthMs).coerceAtLeast(500L)
+                } else {
+                    -1L
+                }
                 audioQueue.enqueue(
                     QueuedTtsAudio(
                         file = audioFile,
                         speechRate = rate,
                         isTimeStretched = usedOfflinePiper,
-                        targetDurationMs = targetDurationMs,
+                        targetDurationMs = adjustedTargetMs,
                         text = clean,
                         ratePercent = ratePercent,
                         cutOnNewer = cutOnNewer,
@@ -367,18 +355,19 @@ class PiperNarrationEngine(
                 }
                 if (released || currentCancel != cancelSeq.get()) return@executeSafe
 
-                if (PiperVoiceCatalog.isOnlineVoice(voice.id)) {
-                    val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
-                    if (file != null) {
-                        storePrefetched(textKey, PrefetchedAudio(file, timeStretched = false, generation = currentCancel))
-                    }
-                } else if (!PiperVoiceManager.isVoiceDownloaded(appContext, voice.id)) {
+                if (PiperVoiceCatalog.isOnlineVoice(voice.id) ||
+                    !PiperVoiceManager.isVoiceDownloaded(appContext, voice.id) ||
+                    slowOfflinePiper
+                ) {
                     val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
                     if (file != null) {
                         storePrefetched(textKey, PrefetchedAudio(file, timeStretched = false, generation = currentCancel))
                     }
                 } else {
                     val bytes = doSynthesize(clean, voice.id, ratePercent)
+                    if (lastInferenceMs > 1_150L) {
+                        slowOfflinePiper = true
+                    }
                     if (bytes != null && bytes.size > 44) {
                         val f = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
                         FileOutputStream(f).use { it.write(bytes) }
@@ -417,6 +406,7 @@ class PiperNarrationEngine(
         runCatching { prefetchQueue.clear() }
         runCatching { prefetchExecutor.shutdownNow() }
         runCatching { worker.shutdownNow() }
+        runCatching { piperExecutor.shutdownNow() }
 
         // Close ONNX session off the caller/Main thread so ongoing inference cannot block UI teardown.
         Thread({
@@ -438,6 +428,130 @@ class PiperNarrationEngine(
     override fun clearPrefetchQueue() {
         prefetchQueue.clear()
         prefetchInFlight.clear()
+    }
+
+    private data class SynthOutcome(
+        val file: File?,
+        val usedOfflinePiper: Boolean,
+        val failureReason: String? = null,
+    )
+
+    private fun writeOfflineWav(bytes: ByteArray?): File? {
+        if (bytes == null || bytes.size <= 44) return null
+        val file = File(cacheDir, "offline_tts_${UUID.randomUUID()}.wav")
+        FileOutputStream(file).use { it.write(bytes) }
+        return file
+    }
+
+    private fun synthesizeOfflineWithRealtimeGuard(
+        clean: String,
+        voiceId: String,
+        ratePercent: Int,
+        mySpeakSeq: Long,
+        currentCancel: Long,
+    ): SynthOutcome {
+        if (!PiperVoiceManager.isVoiceDownloaded(appContext, voiceId)) {
+            NarrationDiag.log(appContext, "piper: voice $voiceId not downloaded -> fallback Google TTS")
+            val result = GoogleTtsApi.synthesize(appContext, clean)
+            return SynthOutcome(
+                file = result.file,
+                usedOfflinePiper = false,
+                failureReason = if (result.file == null) "Voice not downloaded & Google TTS: ${result.error ?: "failed"}" else null,
+            )
+        }
+
+        if (slowPiperVoiceId != voiceId) {
+            slowPiperVoiceId = voiceId
+            slowOfflinePiper = false
+        }
+
+        liveSynthesisActive.set(true)
+        try {
+            if (slowOfflinePiper) {
+                val tGoogle = System.currentTimeMillis()
+                val googleResult = GoogleTtsApi.synthesize(appContext, clean)
+                val googleTook = System.currentTimeMillis() - tGoogle
+                if (googleResult.file != null) {
+                    NarrationDiag.log(appContext, "google (fast fallback): ok ${googleTook}ms (len=${clean.length})")
+                    return SynthOutcome(googleResult.file, usedOfflinePiper = false)
+                }
+                val wav = writeOfflineWav(doSynthesize(clean, voiceId, ratePercent))
+                return if (wav != null) {
+                    SynthOutcome(wav, usedOfflinePiper = true)
+                } else {
+                    SynthOutcome(null, usedOfflinePiper = false, "Google TTS (${googleResult.error}) & Piper failed")
+                }
+            }
+
+            val alreadyLoaded = currentVoiceId == voiceId && ortSession != null && voiceConfig != null
+            val deadlineMs = if (alreadyLoaded) 1_050L else 1_600L
+            val t0 = System.currentTimeMillis()
+            val synthFuture: Future<ByteArray?>? = runCatching {
+                if (released || piperExecutor.isShutdown) null
+                else piperExecutor.submit(Callable { doSynthesize(clean, voiceId, ratePercent) })
+            }.getOrNull()
+
+            if (synthFuture != null) {
+                var waitedMs = 0L
+                while (!synthFuture.isDone && waitedMs < deadlineMs) {
+                    if (released || currentCancel != cancelSeq.get() || mySpeakSeq != liveSpeakSeq.get()) {
+                        return SynthOutcome(null, usedOfflinePiper = false)
+                    }
+                    Thread.sleep(50L)
+                    waitedMs += 50L
+                }
+                if (released || currentCancel != cancelSeq.get() || mySpeakSeq != liveSpeakSeq.get()) {
+                    return SynthOutcome(null, usedOfflinePiper = false)
+                }
+                if (synthFuture.isDone) {
+                    val bytes = synthFuture.get()
+                    val took = System.currentTimeMillis() - t0
+                    val inferMs = lastInferenceMs
+                    if (inferMs > 1_150L) {
+                        slowOfflinePiper = true
+                        NarrationDiag.log(appContext, "piper: slow (${inferMs}ms) -> auto Google TTS next")
+                    }
+                    val wav = writeOfflineWav(bytes)
+                    if (wav != null) {
+                        NarrationDiag.log(appContext, "piper: synth ok ${bytes!!.size}B in ${took}ms (len=${clean.length} r=$ratePercent)")
+                        return SynthOutcome(wav, usedOfflinePiper = true)
+                    }
+                } else {
+                    slowOfflinePiper = true
+                    NarrationDiag.log(appContext, "piper: >${deadlineMs}ms -> fast Google TTS")
+                    val googleResult = GoogleTtsApi.synthesize(appContext, clean)
+                    if (googleResult.file != null) {
+                        return SynthOutcome(googleResult.file, usedOfflinePiper = false)
+                    }
+                    val bytes = runCatching { synthFuture.get(8_000L, TimeUnit.MILLISECONDS) }.getOrNull()
+                    val wav = writeOfflineWav(bytes)
+                    return if (wav != null) {
+                        SynthOutcome(wav, usedOfflinePiper = true)
+                    } else {
+                        SynthOutcome(null, usedOfflinePiper = false, "Piper timeout & Google TTS: ${googleResult.error ?: "failed"}")
+                    }
+                }
+            }
+
+            NarrationDiag.log(appContext, "piper: synth null -> fallback Google TTS")
+            val fallback = GoogleTtsApi.synthesize(appContext, clean)
+            return SynthOutcome(
+                file = fallback.file,
+                usedOfflinePiper = false,
+                failureReason = if (fallback.file == null) "Piper null & Google TTS: ${fallback.error ?: "failed"}" else null,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "Piper live synthesis error, falling back: ${t.message}", t)
+            NarrationDiag.log(appContext, "piper: err -> fallback Google TTS")
+            val fallback = GoogleTtsApi.synthesize(appContext, clean)
+            return SynthOutcome(
+                file = fallback.file,
+                usedOfflinePiper = false,
+                failureReason = if (fallback.file == null) "Piper ${t.javaClass.simpleName} & Google TTS: ${fallback.error ?: "failed"}" else null,
+            )
+        } finally {
+            liveSynthesisActive.set(false)
+        }
     }
 
     /**
@@ -495,7 +609,9 @@ class PiperNarrationEngine(
                     inputs["sid"] = sidTensor
                 }
 
+                val tInfer = System.currentTimeMillis()
                 result = curSession.run(inputs)
+                lastInferenceMs = System.currentTimeMillis() - tInfer
                 val outTensor = result.get(0) as? OnnxTensor ?: return@synchronized null
                 val fb = outTensor.floatBuffer
                 val pcmFloat = FloatArray(fb.remaining())
