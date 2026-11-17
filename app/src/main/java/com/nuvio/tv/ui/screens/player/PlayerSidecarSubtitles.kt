@@ -274,7 +274,7 @@ internal fun PlayerRuntimeController.renderSidecarCuesAtCurrentPosition() {
             nController.clearPrefetchQueue()
         }
 
-        val leadTimeUs = 200_000L // 150ms lead time for audio pipeline so acoustic speech starts in exact sync with subtitle appearance
+        val leadTimeUs = 350_000L // Compensate TTS ExoPlayer/AudioTrack pipeline startup latency (~250-350ms) so speech aligns with subtitle appearance
         val candidate = cues.firstOrNull { entry ->
             entry.startTimeUs > lastNarratedCueStartTimeUs &&
                 (positionUs + leadTimeUs) >= entry.startTimeUs &&
@@ -548,6 +548,6 @@ internal fun activeCueSignature(cues: List<Cue>, stripSdh: Boolean): Long {
     return hash
 }
 
-private const val SIDECAR_RENDER_INTERVAL_MS = 100L
+private const val SIDECAR_RENDER_INTERVAL_MS = 50L
 private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO"
 private const val EMPTY_CUE_SIGNATURE_SDH = 0x4E5556494F01L

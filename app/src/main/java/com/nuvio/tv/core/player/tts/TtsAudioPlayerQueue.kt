@@ -34,6 +34,7 @@ data class QueuedTtsAudio(
     val targetDurationMs: Long = -1L,
     val text: String = "",
     val ratePercent: Int = 100,
+    val cutOnNewer: Boolean = false,
 )
 
 /**
@@ -62,6 +63,7 @@ class TtsAudioPlayerQueue(
     private val playerThread = HandlerThread("nuvio-tts-player").apply { start() }
     private val playerHandler = Handler(playerThread.looper)
     private val queue = ConcurrentLinkedQueue<QueuedTtsAudio>()
+    private val enqueueLock = Any()
 
     // Accessed only on playerHandler.
     private var exoPlayer: ExoPlayer? = null
@@ -166,16 +168,64 @@ class TtsAudioPlayerQueue(
             runCatching { audio.file.delete() }
             return
         }
-        while (queue.size >= MAX_QUEUED_ITEMS) {
-            val dropped = queue.poll() ?: break
-            runCatching { dropped.file.delete() }
-        }
-        queue.add(audio)
-        playerHandler.post {
-            if (!released && !isPlaying) {
-                playNext()
+        synchronized(enqueueLock) {
+            if (audio.cutOnNewer) {
+                // Drop stale waiting sentences immediately so backlog never drifts behind subtitles.
+                clearQueueFiles()
+            } else {
+                while (queue.size >= MAX_QUEUED_ITEMS) {
+                    val dropped = queue.poll() ?: break
+                    runCatching { dropped.file.delete() }
+                }
             }
+            queue.add(audio)
         }
+        playerHandler.post {
+            handleQueueArrival(audio.cutOnNewer)
+        }
+    }
+
+    private fun handleQueueArrival(cutRequested: Boolean) {
+        if (released || queue.isEmpty()) return
+        if (!isPlaying) {
+            playNext()
+            return
+        }
+        if (!cutRequested) return
+        val exo = exoPlayer
+        val shouldCutNow = if (fallbackMediaPlayer == null && exo != null && exo.playbackState == Player.STATE_READY) {
+            val dur = exo.duration
+            val pos = exo.currentPosition
+            if (dur != C.TIME_UNSET && dur > 0L && pos >= 0L) {
+                val remainingMs = ((dur - pos) / currentSpeed.coerceAtLeast(0.5f)).toLong()
+                remainingMs > 220L
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+        if (shouldCutNow) {
+            cutActiveForNextLocked()
+            playNext()
+        }
+    }
+
+    private fun cutActiveForNextLocked() {
+        activeToken++
+        playerHandler.removeCallbacks(watchdogRunnable)
+        safeReleaseEnhancer()
+        safeReleaseFallbackMediaPlayer()
+        runCatching {
+            exoPlayer?.stop()
+            exoPlayer?.clearMediaItems()
+        }
+        activeItem = null
+        activeFile?.let { f ->
+            activeFile = null
+            runCatching { f.delete() }
+        }
+        isPlaying = false
     }
 
     private fun ensureExoPlayer(): ExoPlayer? {
@@ -196,6 +246,8 @@ class TtsAudioPlayerQueue(
                 )
                 .build()
                 .also { player ->
+                    // Strip MP3 encoder padding & trailing silence so speech lands right on cue.
+                    player.skipSilenceEnabled = true
                     player.addListener(exoListener)
                     exoPlayer = player
                 }
@@ -208,10 +260,10 @@ class TtsAudioPlayerQueue(
     }
 
     private fun computeSpeed(item: QueuedTtsAudio, effectiveDurationMs: Long): Float {
-        val maxSpeed = if (effectiveDurationMs >= 3000L) 1.45f else 1.50f
-        var calcSpeed = item.speechRate.coerceIn(0.95f, maxSpeed)
+        val maxSpeed = if (effectiveDurationMs >= 3000L) 1.55f else 1.65f
+        var calcSpeed = item.speechRate.coerceIn(1.0f, maxSpeed)
         if (effectiveDurationMs > 0L && item.targetDurationMs > 0L) {
-            val target = if (effectiveDurationMs >= 3000L) item.targetDurationMs + 220L else item.targetDurationMs
+            val target = (item.targetDurationMs - 140L).coerceAtLeast(600L)
             val ratio = effectiveDurationMs.toFloat() / target.toFloat()
             if (ratio > calcSpeed) {
                 calcSpeed = ratio
@@ -219,11 +271,11 @@ class TtsAudioPlayerQueue(
         }
         val backlogSize = queue.size
         if (backlogSize >= 2) {
-            calcSpeed = maxOf((((backlogSize - 1) * 0.1f) + 1.0f) * calcSpeed, 1.25f)
+            calcSpeed = maxOf((((backlogSize - 1) * 0.12f) + 1.0f) * calcSpeed, 1.35f)
         } else if (backlogSize == 1) {
-            calcSpeed = (calcSpeed * 1.06f).coerceAtMost(maxSpeed)
+            calcSpeed = (calcSpeed * 1.08f).coerceAtMost(maxSpeed)
         }
-        return calcSpeed.coerceIn(0.95f, maxSpeed)
+        return calcSpeed.coerceIn(1.0f, maxSpeed)
     }
 
     private fun applyGainEnhancer(audioSessionId: Int) {
@@ -454,38 +506,27 @@ class TtsAudioPlayerQueue(
     }
 
     private fun resetPlaybackState(releaseExo: Boolean) {
-        activeToken++
-        playerHandler.removeCallbacks(watchdogRunnable)
-        safeReleaseEnhancer()
-        safeReleaseFallbackMediaPlayer()
-        runCatching {
-            exoPlayer?.let { player ->
-                if (releaseExo) {
+        cutActiveForNextLocked()
+        if (releaseExo) {
+            runCatching {
+                exoPlayer?.let { player ->
                     player.removeListener(exoListener)
-                    player.stop()
                     player.release()
-                } else {
-                    player.stop()
-                    player.clearMediaItems()
                 }
             }
-        }
-        if (releaseExo) {
             exoPlayer = null
         }
-        activeItem = null
-        activeFile?.let { f ->
-            activeFile = null
-            runCatching { f.delete() }
+        synchronized(enqueueLock) {
+            clearQueueFiles()
         }
-        clearQueueFiles()
-        isPlaying = false
         currentSpeed = 1.0f
         notifySpeechEndIfNeeded()
     }
 
     fun stop() {
-        clearQueueFiles()
+        synchronized(enqueueLock) {
+            clearQueueFiles()
+        }
         playerHandler.removeCallbacksAndMessages(null)
         playerHandler.post {
             resetPlaybackState(releaseExo = false)
@@ -494,7 +535,9 @@ class TtsAudioPlayerQueue(
 
     fun release() {
         released = true
-        clearQueueFiles()
+        synchronized(enqueueLock) {
+            clearQueueFiles()
+        }
         playerHandler.removeCallbacksAndMessages(null)
         playerHandler.post {
             resetPlaybackState(releaseExo = true)

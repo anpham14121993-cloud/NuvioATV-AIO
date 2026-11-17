@@ -1389,6 +1389,32 @@ internal fun PlayerRuntimeController.initializePlayer(
                         "mimes=${deniedTranscodeMimes.joinToString(",")}"
                 )
             }
+            val narrationTrackMatcher: (Format?) -> Boolean = { format ->
+                val state = _uiState.value
+                if (state.selectedAddonSubtitle != null) {
+                    false
+                } else {
+                    val selected = state.subtitleTracks.getOrNull(state.selectedSubtitleTrackIndex)
+                    if (selected != null) {
+                        val idMatches = selected.trackId != null && format?.id != null &&
+                            selected.trackId == format.id
+                        val langMatches = selected.trackId == null && format?.language != null &&
+                            selected.language != null &&
+                            format.language.equals(selected.language, ignoreCase = true)
+                        idMatches || langMatches
+                    } else {
+                        val lang = format?.language?.lowercase().orEmpty()
+                        lang.isEmpty() || lang.contains("vie") || lang == "vi"
+                    }
+                }
+            }
+            val narrationPrefetchBuffer = EmbeddedNarrationPrefetchBuffer(
+                isEnabled = { _uiState.value.narrationEnabled && !isSidecarAddonSubtitleActive() },
+                selectedTrackMatcher = narrationTrackMatcher,
+                onUpcomingCue = { text, windowSec ->
+                    narration()?.prefetch(text, windowSec = windowSec, targetRam = true)
+                }
+            )
             val nativeSelectionOwner = Any()
             val renderersFactory = SubtitleOffsetRenderersFactory(
                 audioPassthroughPolicy = surroundResolution.policy,
@@ -1436,7 +1462,11 @@ internal fun PlayerRuntimeController.initializePlayer(
                 mapDv7ToHevc = mapDv7ToHevcEnabled,
                 onPlaybackSpeedAwareAudioSinkCreated = { playbackSpeedAwareAudioSink = it },
                 onAudioDiagnosticEvent = { line -> queuePlaybackRawEventLine(line) },
-                onCueText = { text -> narration()?.onCueText(text) },
+                onCueText = { text ->
+                    narration()?.onCueText(text)
+                    val posUs = _playbackTimeline.value.playbackPosition.coerceAtLeast(0L) * 1_000L
+                    narrationPrefetchBuffer.drainUpTo(posUs)
+                },
                 onFfmpegAudioRendererChanged = { renderer ->
                     ffmpegAudioRenderer = renderer
                     renderer?.applyDownmixSettings(
@@ -1489,11 +1519,21 @@ internal fun PlayerRuntimeController.initializePlayer(
                         stripHdr10PlusSei = stripHdr10PlusSei,
                         injectHdr10Sei = playerSettings.injectHdr10MetadataOnStrip
                     )
+            val narrationPrefetchExtractorsFactory: ExtractorsFactory =
+                NarrationPrefetchExtractorsFactory(
+                    delegate = autoSyncExtractorsFactory(dolbyVisionExtractorsFactory, url, headers), // AutoSync hook
+                    isEnabled = { _uiState.value.narrationEnabled && !isSidecarAddonSubtitleActive() },
+                    currentPositionUs = {
+                        _playbackTimeline.value.playbackPosition.coerceAtLeast(0L) * 1_000L
+                    },
+                    selectedTrackMatcher = narrationTrackMatcher,
+                    buffer = narrationPrefetchBuffer,
+                )
             // The thumbnail tap wraps the outermost factory. The libass path takes the unwrapped one and wraps
             // after its own Matroska swap.
             val effectiveExtractorsFactory: ExtractorsFactory =
                 com.nuvio.tv.core.player.thumbnail.PlaybackTap.wrap(
-                    autoSyncExtractorsFactory(dolbyVisionExtractorsFactory, url, headers) // AutoSync hook
+                    narrationPrefetchExtractorsFactory
                 )
 
             setLoadingStatus(

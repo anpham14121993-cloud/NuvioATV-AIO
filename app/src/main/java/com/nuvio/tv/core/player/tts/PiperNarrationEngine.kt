@@ -115,6 +115,7 @@ class PiperNarrationEngine(
     private var narrationVolume = 1f
 
     private val cancelSeq = AtomicLong(0L)
+    private val liveSpeakSeq = AtomicLong(0L)
     private val liveSynthesisActive = AtomicBoolean(false)
 
     @Volatile
@@ -149,9 +150,9 @@ class PiperNarrationEngine(
     }
 
     private fun googleSpeechRate(ratePercent: Int): Float {
-        // Piper uses lengthScale on 70..140; map that range gently onto MediaPlayer
-        // speed [1.10x .. 1.40x] so Android TV HAL time-stretchers stay stable.
-        return (1.10f + ((ratePercent - 70).coerceIn(0, 70) / 70f) * 0.30f).coerceIn(1.05f, 1.40f)
+        // Software Sonic time-stretcher in Media3 ExoPlayer cleanly supports [1.20x .. 1.55x],
+        // keeping Google TTS cadence aligned with Vietnamese subtitle pacing.
+        return (1.20f + ((ratePercent - 70).coerceIn(0, 70) / 70f) * 0.35f).coerceIn(1.15f, 1.55f)
     }
 
     private fun storePrefetched(textKey: String, entry: PrefetchedAudio): Boolean {
@@ -176,6 +177,7 @@ class PiperNarrationEngine(
         if (released) return
         executeSafe(worker) {
             if (released) return@executeSafe
+            GoogleTtsApi.warmUpConnection()
             onStatus(NarrationEngineStatus.READY)
             NarrationDiag.log(appContext, "piper: ready (vax engine)")
         }
@@ -207,6 +209,7 @@ class PiperNarrationEngine(
         }
 
         val currentCancel = cancelSeq.get()
+        val mySpeakSeq = if (cutOnNewer) liveSpeakSeq.incrementAndGet() else liveSpeakSeq.get()
         val textKey = "${voice.id}:$clean"
         val targetDurationMs = budgetMs ?: -1L
 
@@ -222,6 +225,7 @@ class PiperNarrationEngine(
                     targetDurationMs = targetDurationMs,
                     text = clean,
                     ratePercent = ratePercent,
+                    cutOnNewer = cutOnNewer,
                 )
             )
             onResult?.invoke(true, "cache_hit")
@@ -230,7 +234,7 @@ class PiperNarrationEngine(
 
         // 2. Synthesize via Worker
         val scheduled = executeSafe(worker) {
-            if (released || currentCancel != cancelSeq.get()) {
+            if (released || currentCancel != cancelSeq.get() || mySpeakSeq != liveSpeakSeq.get()) {
                 onResult?.invoke(false, "superseded")
                 return@executeSafe
             }
@@ -306,7 +310,7 @@ class PiperNarrationEngine(
                 }
             }
 
-            if (released || currentCancel != cancelSeq.get()) {
+            if (released || currentCancel != cancelSeq.get() || mySpeakSeq != liveSpeakSeq.get()) {
                 runCatching { audioFile?.delete() }
                 onResult?.invoke(false, "superseded")
                 return@executeSafe
@@ -322,6 +326,7 @@ class PiperNarrationEngine(
                         targetDurationMs = targetDurationMs,
                         text = clean,
                         ratePercent = ratePercent,
+                        cutOnNewer = cutOnNewer,
                     )
                 )
                 onResult?.invoke(true, "synth_ok")
@@ -338,7 +343,7 @@ class PiperNarrationEngine(
     }
 
     override fun prefetch(text: String, voiceApiName: String, ratePercent: Int, targetRam: Boolean) {
-        if (released || liveSynthesisActive.get()) return
+        if (released) return
         val voice = PiperVoiceCatalog.findVoice(voiceApiName)
         val clean = PiperPhonemizer.cleanSubtitleText(text)
         if (clean.isBlank()) return
@@ -354,7 +359,13 @@ class PiperNarrationEngine(
         val currentCancel = cancelSeq.get()
         val scheduled = executeSafe(prefetchExecutor) {
             try {
-                if (released || liveSynthesisActive.get() || currentCancel != cancelSeq.get()) return@executeSafe
+                // Yield briefly if a live line is downloading rather than discarding upcoming cues.
+                var waited = 0
+                while (liveSynthesisActive.get() && !released && currentCancel == cancelSeq.get() && waited < 15) {
+                    Thread.sleep(40L)
+                    waited++
+                }
+                if (released || currentCancel != cancelSeq.get()) return@executeSafe
 
                 if (PiperVoiceCatalog.isOnlineVoice(voice.id)) {
                     val file = GoogleTtsApi.synthesizeToFile(appContext, clean)
@@ -386,19 +397,22 @@ class PiperNarrationEngine(
     }
 
     override fun stop() {
-        cancelSeq.incrementAndGet()
+        liveSpeakSeq.incrementAndGet()
         audioQueue.stop()
-        synchronized(prefetchLock) {
-            prefetchedFiles.values.forEach { runCatching { it.file.delete() } }
-            prefetchedFiles.clear()
-        }
         clearPrefetchQueue()
     }
 
     override fun release() {
         released = true
-        stop()
+        cancelSeq.incrementAndGet()
+        liveSpeakSeq.incrementAndGet()
+        audioQueue.stop()
         audioQueue.release()
+        synchronized(prefetchLock) {
+            prefetchedFiles.values.forEach { runCatching { it.file.delete() } }
+            prefetchedFiles.clear()
+        }
+        clearPrefetchQueue()
 
         runCatching { prefetchQueue.clear() }
         runCatching { prefetchExecutor.shutdownNow() }

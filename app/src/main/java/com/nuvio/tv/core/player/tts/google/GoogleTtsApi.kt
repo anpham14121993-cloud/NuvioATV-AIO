@@ -25,12 +25,31 @@ object GoogleTtsApi {
         val error: String? = null,
     )
 
+    @Volatile
+    private var connectionWarmed = false
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(12, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+    /**
+     * Pre-warms DNS + TCP + TLS connection to Google TTS so the first live cue avoids
+     * cold-start handshake latency (~300-700ms). Safe to call from any background thread.
+     */
+    fun warmUpConnection() {
+        if (connectionWarmed) return
+        connectionWarmed = true
+        runCatching {
+            val request = Request.Builder()
+                .url("https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=a")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; Mobile)")
+                .build()
+            httpClient.newCall(request).execute().close()
+        }
+    }
 
     /**
      * Splits long sentences at punctuation or spaces to respect the 200-char limit of Google TTS.
